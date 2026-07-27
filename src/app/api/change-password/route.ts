@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import { clearSessionCookies, getAuthInfoFromCookie } from '@/lib/auth';
 import { getStorage } from '@/lib/db';
 import { IStorage } from '@/lib/types';
 
@@ -58,7 +58,9 @@ export async function POST(request: NextRequest) {
     // 修改密码
     await storage.changePassword(username, newPassword);
 
-    return NextResponse.json({ ok: true });
+    const response = NextResponse.json({ ok: true, reloginRequired: true });
+    clearSessionCookies(response);
+    return response;
   } catch (error) {
     console.error('修改密码失败:', error);
     return NextResponse.json(

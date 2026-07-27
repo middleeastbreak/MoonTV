@@ -25,7 +25,7 @@ export function NavigationLoadingIndicator() {
     <>
       {/* 全屏加载遮罩 */}
       <div
-        className='fixed inset-0 z-[50] bg-white/90 backdrop-blur-xl transition-opacity duration-500 dark:bg-gray-900/90'
+        className='fixed inset-0 z-[900] bg-white/90 backdrop-blur-xl transition-opacity duration-500 dark:bg-gray-900/90'
         style={{
           opacity: doorsClosed ? 1 : 0,
           pointerEvents: doorsClosed ? 'auto' : 'none',
@@ -67,4 +67,3 @@ export function NavigationLoadingIndicator() {
     </>
   );
 }
-

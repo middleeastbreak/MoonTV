@@ -43,12 +43,34 @@ interface EpisodeSelectorProps {
   /** 预计算的测速结果，避免重复测速 */
   precomputedVideoInfo?: Map<string, VideoInfo>;
   /** 优选播放源相关 */
-  preferBestSource?: (sources: SearchResult[], isCancelled?: () => boolean) => Promise<SearchResult>;
+  preferBestSource?: (
+    sources: SearchResult[],
+    isCancelled?: () => boolean
+  ) => Promise<SearchResult>;
   setLoading: (loading: boolean) => void;
   /** 设置视频是否正在加载中的状态 */
   setIsVideoLoading: (loading: boolean) => void;
   /** 设置视频加载阶段的状态 */
-  setVideoLoadingStage: (stage: 'initing' | 'sourceChanging' | 'optimizing') => void;
+  setVideoLoadingStage: (
+    stage: 'initing' | 'sourceChanging' | 'optimizing'
+  ) => void;
+}
+
+function getEpisodeLabel(title: string | undefined, episodeNumber: number) {
+  if (!title) return String(episodeNumber);
+  const numberedTitle = title.match(/^第\s*(\d+)\s*集$/);
+  return numberedTitle?.[1] || title.trim();
+}
+
+function getEpisodeSpan(label: string) {
+  const visualLength = Array.from(label).reduce(
+    (length, character) =>
+      length + ((character.codePointAt(0) || 0) > 0xff ? 2 : 1),
+    0
+  );
+  if (visualLength <= 8) return 'col-span-1 min-h-9';
+  if (visualLength <= 20) return 'col-span-2 min-h-9';
+  return 'col-span-3 sm:col-span-4 min-h-11';
 }
 
 /**
@@ -70,8 +92,6 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   precomputedVideoInfo,
   preferBestSource,
   setLoading,
-  setIsVideoLoading,
-  setVideoLoadingStage
 }) => {
   const router = useRouter();
   const pageCount = Math.ceil(totalEpisodes / episodesPerPage);
@@ -326,7 +346,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   );
 
   return (
-    <div className='px-4 py-0 h-full bg-black/10 dark:bg-white/5 flex flex-col border-t border-b md:border-r border-white/0 dark:border-white/30 overflow-hidden'>
+    <div className='px-4 py-0 h-full bg-black/10 dark:bg-white/5 flex flex-col border-t border-b lg:border-r border-white/0 dark:border-white/30 overflow-hidden'>
       {/* 主要的 Tab 切换 - 无缝融入设计 */}
       <div className='flex mb-1 -mx-6 flex-shrink-0'>
         {totalEpisodes > 1 && (
@@ -354,57 +374,67 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
           `.trim()}
         >
           <span>换源</span>
-          {preferBestSource && availableSources && availableSources.length > 0 && (
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                if (isOptimizing) return; // 防止重复点击
-                if (!availableSources || availableSources.length === 0) return;
-                // 重置取消标志
-                cancelOptimizationRef.current = false;
-                setIsOptimizing(true);
-                preferBestSource(availableSources, () => cancelOptimizationRef.current)
-                  .then((bestSource) => {
-                    // 如果已取消，则忽略结果
-                    if (cancelOptimizationRef.current) return;
-                    // 确保bestSource有效
-                    if (bestSource && (bestSource.source !== currentSource || bestSource.id !== currentId)) {
-                      // 切换到最佳播放源
-                      handleSourceClick(bestSource);
-                    }
-                  })
-                  .catch((_err: Error) => {
-                    // 静默处理错误，因为已经有UI提示
-                  })
-                  .finally(() => {
-                    if (!cancelOptimizationRef.current) {
-                      setIsOptimizing(false);
-                      if (setLoading) setLoading(false);
-                    }
-                    // 重置取消标志
-                    cancelOptimizationRef.current = false;
-                  });
-              }}
-              className={`ml-2 bg-blue-500 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shadow-md transition-all duration-300 ease-out ${
-                isOptimizing
-                  ? 'opacity-50 cursor-not-allowed'
-                  : 'hover:bg-blue-600 hover:scale-110 cursor-pointer'
-              }`}
-              title={isOptimizing ? '优选进行中...' : '优选播放源'}
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+          {preferBestSource &&
+            availableSources &&
+            availableSources.length > 0 && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isOptimizing) return; // 防止重复点击
+                  if (!availableSources || availableSources.length === 0)
+                    return;
+                  // 重置取消标志
+                  cancelOptimizationRef.current = false;
+                  setIsOptimizing(true);
+                  preferBestSource(
+                    availableSources,
+                    () => cancelOptimizationRef.current
+                  )
+                    .then((bestSource) => {
+                      // 如果已取消，则忽略结果
+                      if (cancelOptimizationRef.current) return;
+                      // 确保bestSource有效
+                      if (
+                        bestSource &&
+                        (bestSource.source !== currentSource ||
+                          bestSource.id !== currentId)
+                      ) {
+                        // 切换到最佳播放源
+                        handleSourceClick(bestSource);
+                      }
+                    })
+                    .catch((_err: Error) => {
+                      // 静默处理错误，因为已经有UI提示
+                    })
+                    .finally(() => {
+                      if (!cancelOptimizationRef.current) {
+                        setIsOptimizing(false);
+                        if (setLoading) setLoading(false);
+                      }
+                      // 重置取消标志
+                      cancelOptimizationRef.current = false;
+                    });
+                }}
+                className={`ml-2 bg-blue-500 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shadow-md transition-all duration-300 ease-out ${
+                  isOptimizing
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'hover:bg-blue-600 hover:scale-110 cursor-pointer'
+                }`}
+                title={isOptimizing ? '优选进行中...' : '优选播放源'}
               >
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-              </svg>
-            </div>
-          )}
+                <svg
+                  className='w-3.5 h-3.5'
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  strokeLinecap='round'
+                  strokeLinejoin='round'
+                >
+                  <path d='M13 2L3 14h9l-1 8 10-12h-9l1-8z' />
+                </svg>
+              </div>
+            )}
         </div>
       </div>
 
@@ -413,7 +443,10 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
         <>
           {/* 分类标签 */}
           <div className='flex items-center gap-4 mb-4 border-b border-gray-300 dark:border-gray-700 -mx-6 px-6 flex-shrink-0'>
-            <div className='flex-1 overflow-x-auto scrollbar-hide' ref={categoryContainerRef}>
+            <div
+              className='flex-1 overflow-x-auto scrollbar-hide'
+              ref={categoryContainerRef}
+            >
               <div className='flex gap-2 min-w-max'>
                 {categories.map((label, idx) => {
                   const isActive = idx === displayPage;
@@ -467,7 +500,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
           {/* 集数网格 */}
           <div className='overflow-y-auto flex-1 pb-4 scrollbar-hide'>
-            <div className='grid grid-cols-3 sm:grid-cols-4 gap-3'>
+            <div className='grid grid-cols-3 sm:grid-cols-4 gap-3 grid-flow-dense'>
               {(() => {
                 const len = currentEnd - currentStart + 1;
                 const episodes = Array.from({ length: len }, (_, i) =>
@@ -476,29 +509,26 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                 return episodes;
               })().map((episodeNumber) => {
                 const isActive = episodeNumber === value;
+                const fullTitle = episodes_titles?.[episodeNumber - 1];
+                const label = getEpisodeLabel(fullTitle, episodeNumber);
                 return (
                   <button
                     key={episodeNumber}
                     onClick={() => handleEpisodeClick(episodeNumber - 1)}
-                    className={`h-9 px-1 py-1 flex items-center justify-center text-xs font-medium rounded transition-all duration-200 whitespace-nowrap font-mono
+                    title={fullTitle || `第 ${episodeNumber} 集`}
+                    aria-label={`播放${fullTitle || `第 ${episodeNumber} 集`}`}
+                    className={`${getEpisodeSpan(
+                      label
+                    )} px-2 py-1.5 flex items-center justify-center text-xs font-medium rounded transition-all duration-200 overflow-hidden
                       ${
                         isActive
                           ? 'bg-green-500 text-white shadow-lg shadow-green-500/25 dark:bg-green-600'
                           : 'bg-gray-200 text-gray-700 hover:bg-gray-300 hover:scale-105 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/20'
                       }`.trim()}
                   >
-                    {(() => {
-                      const title = episodes_titles?.[episodeNumber - 1];
-                      if (!title) {
-                        return episodeNumber;
-                      }
-                      // 如果匹配"第X集"格式，提取中间的数字
-                      const match = title.match(/第(\d+)集/);
-                      if (match) {
-                        return match[1];
-                      }
-                      return title;
-                    })()}
+                    <span className='max-w-full break-all whitespace-normal leading-snug text-center'>
+                      {label}
+                    </span>
                   </button>
                 );
               })}

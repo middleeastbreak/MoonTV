@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { downloadTsSegment, parseM3U8 } from '@/lib/m3u8-downloader';
+import { validateExternalUrl } from '@/lib/safe-url';
 
 export const runtime = 'edge';
 
@@ -16,7 +17,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '缺少 m3u8 URL' }, { status: 400 });
     }
 
-    const task = await parseM3U8(url);
+    const safeUrl = validateExternalUrl(url).toString();
+    const task = await parseM3U8(safeUrl);
 
     return NextResponse.json({
       success: true,
@@ -58,8 +60,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '缺少 URL 参数' }, { status: 400 });
     }
 
-    const data = await downloadTsSegment(url);
-    
+    const safeUrl = validateExternalUrl(url).toString();
+    const data = await downloadTsSegment(safeUrl);
+
     return new NextResponse(data, {
       headers: {
         'Content-Type': 'application/octet-stream',

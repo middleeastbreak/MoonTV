@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+import { fetchExternal } from '@/lib/safe-url';
+
 export const runtime = 'edge';
 
 // OrionTV 兼容接口
@@ -12,7 +14,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const imageResponse = await fetch(imageUrl, {
+    const imageResponse = await fetchExternal(imageUrl, {
       headers: {
         Referer: 'https://movie.douban.com/',
         'User-Agent':
@@ -28,6 +30,18 @@ export async function GET(request: Request) {
     }
 
     const contentType = imageResponse.headers.get('content-type');
+    if (!contentType?.toLowerCase().startsWith('image/')) {
+      return NextResponse.json({ error: '目标不是图片' }, { status: 415 });
+    }
+    const contentLength = Number(
+      imageResponse.headers.get('content-length') || 0
+    );
+    if (contentLength > 10 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: '图片超过 10MB 限制' },
+        { status: 413 }
+      );
+    }
 
     if (!imageResponse.body) {
       return NextResponse.json(

@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getAuthInfoFromCookie } from '@/lib/auth';
+import { getAuthInfoFromCookie, verifyAuthInfo } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { getStorage } from '@/lib/db';
 
@@ -12,14 +12,20 @@ export async function GET(request: NextRequest) {
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   const adminConfig = await getConfig();
 
-  // 本地模式：不强制要求登录，用环境变量返回只读信息
+  const authInfo = getAuthInfoFromCookie(request);
+  if (!(await verifyAuthInfo(authInfo))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // 本地模式：已登录用户可读取 TVBox 配置
   if (storageType === 'localstorage') {
     const base = new URL(request.url);
     base.pathname = '/api/tvbox/config';
     base.search = '';
     return NextResponse.json({
       enabled:
-        (process.env.TVBOX_ENABLED == null || String(process.env.TVBOX_ENABLED).trim() === '')
+        process.env.TVBOX_ENABLED == null ||
+        String(process.env.TVBOX_ENABLED).trim() === ''
           ? true
           : String(process.env.TVBOX_ENABLED).toLowerCase() === 'true',
       password: process.env.PASSWORD || '',
@@ -29,7 +35,6 @@ export async function GET(request: NextRequest) {
   }
 
   // 非本地模式：需要已登录用户
-  const authInfo = getAuthInfoFromCookie(request);
   if (!authInfo || !authInfo.username) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -43,8 +48,7 @@ export async function GET(request: NextRequest) {
   const url = `${base.toString()}?un=${encodeURIComponent(un)}`;
 
   const payload = {
-    enabled:
-      adminConfig.SiteConfig.TVBoxEnabled === true,
+    enabled: adminConfig.SiteConfig.TVBoxEnabled === true,
     password: adminConfig.SiteConfig.TVBoxPassword || '',
     url,
     localMode: false,
@@ -55,14 +59,16 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const authInfo = getAuthInfoFromCookie(request);
-  if (!authInfo || !authInfo.username) {
+  if (!(await verifyAuthInfo(authInfo)) || !authInfo?.username) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const adminConfig = await getConfig();
   const username = authInfo.username;
   if (username !== process.env.USERNAME) {
-    const user = adminConfig.UserConfig.Users.find((u) => u.username === username);
+    const user = adminConfig.UserConfig.Users.find(
+      (u) => u.username === username
+    );
     if (!user || user.role !== 'admin' || user.banned) {
       return NextResponse.json({ error: '权限不足' }, { status: 403 });
     }
@@ -93,7 +99,8 @@ export async function POST(request: NextRequest) {
   let finalPassword = (adminConfig.SiteConfig as any).TVBoxPassword || '';
   if (mode === 'random') {
     // 简单随机口令
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const alphabet =
+      'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
     finalPassword = Array.from({ length: 16 })
       .map(() => alphabet[Math.floor(Math.random() * alphabet.length)])
       .join('');
@@ -121,5 +128,3 @@ export async function POST(request: NextRequest) {
     })(),
   });
 }
-
-

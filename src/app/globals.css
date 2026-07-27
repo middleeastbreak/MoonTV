@@ -143,6 +143,69 @@ div[data-media-provider] video {
   background-color: #000 !important; /* 其余区域填充为黑色 */
 }
 
+/*
+ * 将普通嵌入状态下的播放器内部层级限制在播放器自身范围内。
+ * ArtPlayer 的控件和弹幕使用较高 z-index；若不建立独立层叠上下文，
+ * iPad Safari 滚动时 video 合成层可能覆盖 sticky 顶部导航。
+ * 全屏状态必须保持最高层级，因此不应用此限制。
+ */
+.art-video-player:not(.art-fullscreen):not(.art-fullscreen-web) {
+  isolation: isolate;
+  z-index: 0;
+}
+
+/* 全屏隐藏控制栏时不保留迷你进度条，唤出标准控制栏后仍可正常拖动 */
+.art-video-player.art-fullscreen.art-mini-progress-bar .art-bottom,
+.art-video-player.art-fullscreen-web.art-mini-progress-bar .art-bottom {
+  opacity: 0;
+}
+
+/* 控制栏只保留一个弹幕设置入口，显示开关移动到设置面板内 */
+.art-video-player .artplayer-plugin-danmuku > .apd-toggle {
+  display: none !important;
+}
+
+.art-video-player
+  .artplayer-plugin-danmuku
+  .apd-config.moontv-danmaku-config-open
+  .apd-config-panel {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.art-video-player .artplayer-plugin-danmuku .moontv-danmaku-visibility-row {
+  display: flex;
+  min-height: 40px;
+  margin-bottom: 15px;
+  padding: 8px 10px;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 8%);
+  outline: none;
+}
+
+.art-video-player
+  .artplayer-plugin-danmuku
+  .moontv-danmaku-visibility-row:hover,
+.art-video-player
+  .artplayer-plugin-danmuku
+  .moontv-danmaku-visibility-row:focus-visible {
+  background: rgb(255 255 255 / 15%);
+}
+
+.art-video-player
+  .artplayer-plugin-danmuku
+  .moontv-danmaku-visibility-row
+  .apd-toggle {
+  display: flex;
+  min-width: 36px;
+  min-height: 32px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 /* 隐藏移动端竖屏时的 pip 按钮 */
 @media (max-width: 768px) {
   .art-control-pip {

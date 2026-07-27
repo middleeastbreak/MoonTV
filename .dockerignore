@@ -1,2 +1,8 @@
 .env
 .env*.local
+.git
+.next
+node_modules
+artifacts
+npm-debug.log*
+pnpm-debug.log*

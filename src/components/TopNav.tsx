@@ -442,7 +442,7 @@ const TopNav = ({ activePath }: TopNavProps) => {
 
   return (
     <>
-    <header className='hidden md:block sticky top-0 z-50 w-full bg-white/80 backdrop-blur-xl border-b border-gray-200/50 shadow-sm dark:bg-gray-900/80 dark:border-gray-700/50'>
+    <header className='hidden md:block sticky top-0 z-[700] w-full bg-white/80 backdrop-blur-xl border-b border-gray-200/50 shadow-sm dark:bg-gray-900/80 dark:border-gray-700/50'>
       <div className='mx-auto px-6 h-16 flex items-center justify-between gap-6'>
         {/* Logo */}
         {simpleMode ? (
@@ -565,4 +565,3 @@ const TopNav = ({ activePath }: TopNavProps) => {
 // 使用 React.memo 优化，避免父组件更新时导致不必要的重新渲染
 // 由于 TopNav 主要依赖内部 hooks 和全局状态，不需要 props 比较函数
 export default memo(TopNav);
-

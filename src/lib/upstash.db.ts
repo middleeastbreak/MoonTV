@@ -3,6 +3,7 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
+import { hashPassword, isPasswordHash, verifyPassword } from './password';
 import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
@@ -83,14 +84,19 @@ export class UpstashRedisStorage implements IStorage {
     // 删除同名的旧记录
     if (record.title) {
       const pattern = `u:${userName}:pr:*`;
-      const allKeys: string[] = await withRetry(() => this.client.keys(pattern));
-      
+      const allKeys: string[] = await withRetry(() =>
+        this.client.keys(pattern)
+      );
+
       for (const fullKey of allKeys) {
         const val = await withRetry(() => this.client.get(fullKey));
         if (val) {
           const existingRecord = val as PlayRecord;
           // 如果找到同名但不是当前key的记录，则删除它
-          if (existingRecord.title === record.title && fullKey !== this.prKey(userName, key)) {
+          if (
+            existingRecord.title === record.title &&
+            fullKey !== this.prKey(userName, key)
+          ) {
             await withRetry(() => this.client.del(fullKey));
           }
         }
@@ -171,8 +177,10 @@ export class UpstashRedisStorage implements IStorage {
   }
 
   async registerUser(userName: string, password: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
-    await withRetry(() => this.client.set(this.userPwdKey(userName), password));
+    const storedPassword = await hashPassword(password);
+    await withRetry(() =>
+      this.client.set(this.userPwdKey(userName), storedPassword)
+    );
   }
 
   async verifyUser(userName: string, password: string): Promise<boolean> {
@@ -180,8 +188,11 @@ export class UpstashRedisStorage implements IStorage {
       this.client.get(this.userPwdKey(userName))
     );
     if (stored === null) return false;
-    // 确保比较时都是字符串类型
-    return ensureString(stored) === password;
+    const storedPassword = ensureString(stored);
+    const valid = await verifyPassword(password, storedPassword);
+    if (valid && !isPasswordHash(storedPassword))
+      await this.changePassword(userName, password);
+    return valid;
   }
 
   // 检查用户是否存在
@@ -195,9 +206,9 @@ export class UpstashRedisStorage implements IStorage {
 
   // 修改用户密码
   async changePassword(userName: string, newPassword: string): Promise<void> {
-    // 简单存储明文密码，生产环境应加密
+    const storedPassword = await hashPassword(newPassword);
     await withRetry(() =>
-      this.client.set(this.userPwdKey(userName), newPassword)
+      this.client.set(this.userPwdKey(userName), storedPassword)
     );
   }
 
@@ -363,8 +374,12 @@ export class UpstashRedisStorage implements IStorage {
 
   // 清空所有数据
   async clearAllData(): Promise<void> {
-    const client = getUpstashRedisClient();
-    await client.flushall();
+    // 只删除 MoonTV 自己管理的键，避免误删共用 Upstash 数据库中的其他业务数据。
+    const users = await this.getAllUsers();
+    for (const username of users) {
+      await this.deleteUser(username);
+    }
+    await withRetry(() => this.client.del(this.adminConfigKey()));
   }
 }
 

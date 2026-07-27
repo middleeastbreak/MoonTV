@@ -6,6 +6,12 @@ interface ErrorInfo {
   id: string;
   message: string;
   timestamp: number;
+  autoDismissMs?: number;
+}
+
+interface GlobalErrorDetail {
+  message: string;
+  autoDismissMs?: number;
 }
 
 export function GlobalErrorIndicator() {
@@ -15,12 +21,13 @@ export function GlobalErrorIndicator() {
 
   useEffect(() => {
     // 监听自定义错误事件
-    const handleError = (event: CustomEvent) => {
-      const { message } = event.detail;
+    const handleError = (event: CustomEvent<GlobalErrorDetail>) => {
+      const { message, autoDismissMs } = event.detail;
       const newError: ErrorInfo = {
         id: Date.now().toString(),
         message,
         timestamp: Date.now(),
+        autoDismissMs,
       };
 
       // 如果已有错误，开始替换动画
@@ -47,6 +54,18 @@ export function GlobalErrorIndicator() {
       window.removeEventListener('globalError', handleError as EventListener);
     };
   }, [currentError]);
+
+  useEffect(() => {
+    if (!isVisible || !currentError?.autoDismissMs) return;
+
+    const timer = window.setTimeout(() => {
+      setIsVisible(false);
+      setCurrentError(null);
+      setIsReplacing(false);
+    }, currentError.autoDismissMs);
+
+    return () => window.clearTimeout(timer);
+  }, [currentError, isVisible]);
 
   const handleClose = () => {
     setIsVisible(false);
@@ -94,11 +113,11 @@ export function GlobalErrorIndicator() {
 }
 
 // 全局错误触发函数
-export function triggerGlobalError(message: string) {
+export function triggerGlobalError(message: string, autoDismissMs?: number) {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(
       new CustomEvent('globalError', {
-        detail: { message },
+        detail: { message, autoDismissMs },
       })
     );
   }

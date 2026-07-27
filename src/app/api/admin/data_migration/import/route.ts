@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { inflate } from 'pako';
+import { z } from 'zod';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
 import { configSelfCheck, setCachedConfig } from '@/lib/config';
@@ -9,6 +10,25 @@ import { SimpleCrypto } from '@/lib/crypto';
 import { db } from '@/lib/db';
 
 export const runtime = 'edge';
+
+const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES = 50 * 1024 * 1024;
+const backupSchema = z.object({
+  timestamp: z.union([z.string(), z.number()]).optional(),
+  serverVersion: z.string().optional(),
+  data: z.object({
+    adminConfig: z.record(z.unknown()),
+    userData: z.record(
+      z.object({
+        password: z.string().optional(),
+        playRecords: z.record(z.unknown()).optional(),
+        favorites: z.record(z.unknown()).optional(),
+        searchHistory: z.array(z.string()).max(10_000).optional(),
+        skipConfigs: z.record(z.unknown()).optional(),
+      })
+    ),
+  }),
+});
 
 // pako 的 gunzip 是同步的，不需要 promisify
 
@@ -31,7 +51,10 @@ export async function POST(req: NextRequest) {
 
     // 检查用户权限（只有站长可以导入数据）
     if (authInfo.username !== process.env.USERNAME) {
-      return NextResponse.json({ error: '权限不足，只有站长可以导入数据' }, { status: 401 });
+      return NextResponse.json(
+        { error: '权限不足，只有站长可以导入数据' },
+        { status: 401 }
+      );
     }
 
     // 解析表单数据
@@ -41,6 +64,13 @@ export async function POST(req: NextRequest) {
 
     if (!file) {
       return NextResponse.json({ error: '请选择备份文件' }, { status: 400 });
+    }
+
+    if (file.size > MAX_BACKUP_BYTES) {
+      return NextResponse.json(
+        { error: '备份文件不能超过 10MB' },
+        { status: 413 }
+      );
     }
 
     if (!password) {
@@ -54,29 +84,39 @@ export async function POST(req: NextRequest) {
     let decryptedData: string;
     try {
       decryptedData = SimpleCrypto.decrypt(encryptedData, password);
+      if (decryptedData.length > MAX_BACKUP_BYTES * 2) {
+        return NextResponse.json(
+          { error: '解密后的备份数据过大' },
+          { status: 413 }
+        );
+      }
     } catch (error) {
-      return NextResponse.json({ error: '解密失败，请检查密码是否正确' }, { status: 400 });
+      return NextResponse.json(
+        { error: '解密失败，请检查密码是否正确' },
+        { status: 400 }
+      );
     }
 
     // 解压缩数据
     const compressedBuffer = Buffer.from(decryptedData, 'base64');
     const decompressedBuffer = inflate(compressedBuffer);
+    if (decompressedBuffer.byteLength > MAX_DECOMPRESSED_BYTES) {
+      return NextResponse.json(
+        { error: '解压后的备份不能超过 50MB' },
+        { status: 413 }
+      );
+    }
     const decompressedData = new TextDecoder().decode(decompressedBuffer);
 
     // 解析JSON数据
     let importData: any;
     try {
-      importData = JSON.parse(decompressedData);
+      importData = backupSchema.parse(JSON.parse(decompressedData));
     } catch (error) {
       return NextResponse.json({ error: '备份文件格式错误' }, { status: 400 });
     }
 
-    // 验证数据格式
-    if (!importData.data || !importData.data.adminConfig || !importData.data.userData) {
-      return NextResponse.json({ error: '备份文件格式无效' }, { status: 400 });
-    }
-
-    // 开始导入数据 - 先清空现有数据
+    // 完整校验通过后才清空旧数据，避免格式错误的备份导致数据丢失。
     await db.clearAllData();
 
     // 导入管理员配置
@@ -110,7 +150,8 @@ export async function POST(req: NextRequest) {
 
       // 导入搜索历史
       if (user.searchHistory && Array.isArray(user.searchHistory)) {
-        for (const keyword of user.searchHistory.reverse()) { // 反转以保持顺序
+        for (const keyword of [...user.searchHistory].reverse()) {
+          // 反转以保持顺序
           await db.addSearchHistory(username, keyword);
         }
       }
@@ -130,9 +171,11 @@ export async function POST(req: NextRequest) {
       message: '数据导入成功',
       importedUsers: Object.keys(userData).length,
       timestamp: importData.timestamp,
-      serverVersion: typeof importData.serverVersion === 'string' ? importData.serverVersion : '未知版本'
+      serverVersion:
+        typeof importData.serverVersion === 'string'
+          ? importData.serverVersion
+          : '未知版本',
     });
-
   } catch (error) {
     console.error('数据导入失败:', error);
     return NextResponse.json(

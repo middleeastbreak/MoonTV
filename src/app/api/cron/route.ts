@@ -9,11 +9,16 @@ import { SearchResult } from '@/lib/types';
 export const runtime = 'edge';
 
 export async function GET(request: NextRequest) {
-  console.log(request.url);
+  const expectedSecret = process.env.CRON_SECRET || process.env.PASSWORD;
+  const authorization = request.headers.get('authorization');
+  if (!expectedSecret || authorization !== `Bearer ${expectedSecret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     console.log('Cron job triggered:', new Date().toISOString());
 
-    refreshRecordAndFavorites();
+    await refreshRecordAndFavorites();
 
     return NextResponse.json({
       success: true,

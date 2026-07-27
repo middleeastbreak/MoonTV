@@ -13,15 +13,15 @@ export async function GET(request: NextRequest) {
   // 检查是否为本地存储模式
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
   const isLocalStorage = storageType === 'localstorage';
-  
+
   let authInfo = null;
   if (!isLocalStorage) {
     // 非本地存储模式才需要认证
     authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
       });
     }
   }
@@ -34,15 +34,15 @@ export async function GET(request: NextRequest) {
   const timeout = timeoutParam ? parseInt(timeoutParam, 10) * 1000 : undefined; // 转换为毫秒
 
   const config = await getConfig();
-  
+
   // 获取用户可用的搜索源
   let apiSites = await getAvailableApiSites(authInfo?.username);
-  
+
   // 如果指定了搜索源，只使用选中的搜索源
   const selectedSourcesParam = searchParams.get('sources');
   if (selectedSourcesParam) {
     const selectedSources = selectedSourcesParam.split(',');
-    apiSites = apiSites.filter(site => selectedSources.includes(site.key));
+    apiSites = apiSites.filter((site) => selectedSources.includes(site.key));
   }
 
   const encoder = new TextEncoder();
@@ -115,7 +115,7 @@ export async function GET(request: NextRequest) {
         return { siteResults, failed: null };
       } catch (err: any) {
         let errorMessage = err.message || '未知的错误';
-        
+
         // 根据错误类型提供更具体的错误信息
         if (err.message === '请求超时') {
           errorMessage = '请求超时';
@@ -124,7 +124,7 @@ export async function GET(request: NextRequest) {
         } else if (err.message?.includes('网络错误')) {
           errorMessage = '网络错误';
         }
-        
+
         return {
           siteResults: [],
           failed: { name: site.name, key: site.key, error: errorMessage },
@@ -164,6 +164,9 @@ export async function GET(request: NextRequest) {
   (async () => {
     const aggregatedResults: any[] = [];
     const failedSources: { name: string; key: string; error: string }[] = [];
+    let completedSources = 0;
+
+    await safeWrite({ type: 'start', totalSources: apiSites.length });
 
     const tasks = apiSites.map(async (site) => {
       try {
@@ -183,25 +186,39 @@ export async function GET(request: NextRequest) {
           }
 
           if (hasResults && filteredResults.length === 0) {
-            failedSources.push({ name: site.name, key: site.key, error: '结果被过滤' });
+            failedSources.push({
+              name: site.name,
+              key: site.key,
+              error: '结果被过滤',
+            });
             await safeWrite({ failedSources });
             return;
           }
 
           aggregatedResults.push(...filteredResults);
-          if (!(await safeWrite({ site: site.key, pageResults: filteredResults }))) {
+          if (
+            !(await safeWrite({
+              type: 'results',
+              site: site.key,
+              pageResults: filteredResults,
+            }))
+          ) {
             return;
           }
         }
 
         if (!hasResults) {
-          failedSources.push({ name: site.name, key: site.key, error: '无搜索结果' });
+          failedSources.push({
+            name: site.name,
+            key: site.key,
+            error: '无搜索结果',
+          });
           await safeWrite({ failedSources });
         }
       } catch (err: any) {
         console.warn(`搜索失败 ${site.name}:`, err.message);
         let errorMessage = err.message || '未知的错误';
-        
+
         // 根据错误类型提供更具体的错误信息
         if (err.message === '请求超时') {
           errorMessage = '请求超时';
@@ -210,9 +227,21 @@ export async function GET(request: NextRequest) {
         } else if (err.message.includes('网络错误')) {
           errorMessage = '网络错误';
         }
-        
-        failedSources.push({ name: site.name, key: site.key, error: errorMessage });
+
+        failedSources.push({
+          name: site.name,
+          key: site.key,
+          error: errorMessage,
+        });
         await safeWrite({ failedSources });
+      } finally {
+        completedSources += 1;
+        await safeWrite({
+          type: 'progress',
+          completedSources,
+          totalSources: apiSites.length,
+          resultCount: aggregatedResults.length,
+        });
       }
     });
 
@@ -222,7 +251,11 @@ export async function GET(request: NextRequest) {
     if (failedSources.length > 0) {
       await safeWrite({ failedSources });
     }
-    await safeWrite({ aggregatedResults });
+    await safeWrite({
+      type: 'complete',
+      aggregatedResults,
+      resultCount: aggregatedResults.length,
+    });
 
     try {
       await writer.close();
@@ -234,8 +267,9 @@ export async function GET(request: NextRequest) {
   const cacheTime = await getCacheTime();
   return new Response(readable, {
     headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': `private, max-age=${cacheTime}`,
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': `private, max-age=${cacheTime}, no-transform`,
+      'X-Accel-Buffering': 'no',
     },
   });
 }

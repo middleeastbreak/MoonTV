@@ -32,21 +32,17 @@ function VersionDisplay() {
   }, []);
 
   return (
-    <button
-      onClick={() =>
-        window.open('https://github.com/Stardm0/MoonTV', '_blank')
-      }
-      className='absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 transition-colors cursor-pointer'
-    >
+    <div className='absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400'>
       <span className='font-mono'>v{CURRENT_VERSION}</span>
       {!isChecking && updateStatus !== UpdateStatus.FETCH_FAILED && (
         <div
-          className={`flex items-center gap-1.5 ${updateStatus === UpdateStatus.HAS_UPDATE
+          className={`flex items-center gap-1.5 ${
+            updateStatus === UpdateStatus.HAS_UPDATE
               ? 'text-yellow-600 dark:text-yellow-400'
               : updateStatus === UpdateStatus.NO_UPDATE
-                ? 'text-green-600 dark:text-green-400'
-                : ''
-            }`}
+              ? 'text-green-600 dark:text-green-400'
+              : ''
+          }`}
         >
           {updateStatus === UpdateStatus.HAS_UPDATE && (
             <>
@@ -62,7 +58,7 @@ function VersionDisplay() {
           )}
         </div>
       )}
-    </button>
+    </div>
   );
 }
 
