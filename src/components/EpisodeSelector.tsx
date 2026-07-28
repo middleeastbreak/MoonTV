@@ -10,7 +10,12 @@ import React, {
 } from 'react';
 
 import { SearchResult } from '@/lib/types';
-import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
+import {
+  getSourceEpisodeForProbe,
+  getSourceProbeKey,
+  getVideoResolutionFromM3u8,
+  processImageUrl,
+} from '@/lib/utils';
 
 // 定义视频信息类型
 interface VideoInfo {
@@ -143,39 +148,42 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   }, [currentPage, descending, pageCount]);
 
   // 获取视频信息的函数 - 移除 attemptedSources 依赖避免不必要的重新创建
-  const getVideoInfo = useCallback(async (source: SearchResult) => {
-    const sourceKey = `${source.source}-${source.id}`;
+  const getVideoInfo = useCallback(
+    async (source: SearchResult) => {
+      const sourceKey = getSourceProbeKey(source, value - 1);
 
-    // 使用 ref 获取最新的状态，避免闭包问题
-    if (attemptedSourcesRef.current.has(sourceKey)) {
-      return;
-    }
+      // 使用 ref 获取最新的状态，避免闭包问题
+      if (attemptedSourcesRef.current.has(sourceKey)) {
+        return;
+      }
 
-    // 获取第一集的URL
-    if (!source.episodes || source.episodes.length === 0) {
-      return;
-    }
-    const episodeUrl =
-      source.episodes.length > 1 ? source.episodes[1] : source.episodes[0];
+      // 测试用户当前正在观看的集数，避免不同集 CDN 状态造成误导。
+      if (!source.episodes || source.episodes.length === 0) {
+        return;
+      }
+      const episodeUrl = getSourceEpisodeForProbe(source, value - 1);
+      if (!episodeUrl) return;
 
-    // 标记为已尝试
-    setAttemptedSources((prev) => new Set(prev).add(sourceKey));
+      // 标记为已尝试
+      setAttemptedSources((prev) => new Set(prev).add(sourceKey));
 
-    try {
-      const info = await getVideoResolutionFromM3u8(episodeUrl);
-      setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
-    } catch (error) {
-      // 失败时保存错误状态
-      setVideoInfoMap((prev) =>
-        new Map(prev).set(sourceKey, {
-          quality: '错误',
-          loadSpeed: '未知',
-          pingTime: 0,
-          hasError: true,
-        })
-      );
-    }
-  }, []);
+      try {
+        const info = await getVideoResolutionFromM3u8(episodeUrl);
+        setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
+      } catch (error) {
+        // 失败时保存错误状态
+        setVideoInfoMap((prev) =>
+          new Map(prev).set(sourceKey, {
+            quality: '错误',
+            loadSpeed: '未知',
+            pingTime: 0,
+            hasError: true,
+          })
+        );
+      }
+    },
+    [value]
+  );
 
   // 当有预计算结果时，先合并到videoInfoMap中
   useEffect(() => {
@@ -235,7 +243,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
       // 筛选出尚未测速的播放源
       const pendingSources = availableSources.filter((source) => {
-        const sourceKey = `${source.source}-${source.id}`;
+        const sourceKey = getSourceProbeKey(source, value - 1);
         return !attemptedSourcesRef.current.has(sourceKey);
       });
 
@@ -251,7 +259,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
     fetchVideoInfosInBatches();
     // 依赖项保持与之前一致
-  }, [activeTab, availableSources, getVideoInfo, optimizationEnabled]);
+  }, [activeTab, availableSources, getVideoInfo, optimizationEnabled, value]);
 
   // 升序分页标签
   const categoriesAsc = useMemo(() => {
@@ -659,7 +667,10 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                               )}
                             </div>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
+                              const sourceKey = getSourceProbeKey(
+                                source,
+                                value - 1
+                              );
                               const videoInfo = videoInfoMap.get(sourceKey);
 
                               if (videoInfo && videoInfo.quality !== '未知') {
@@ -712,7 +723,10 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                           {/* 网络信息 - 底部 */}
                           <div className='flex items-end h-6'>
                             {(() => {
-                              const sourceKey = `${source.source}-${source.id}`;
+                              const sourceKey = getSourceProbeKey(
+                                source,
+                                value - 1
+                              );
                               const videoInfo = videoInfoMap.get(sourceKey);
                               if (videoInfo) {
                                 if (!videoInfo.hasError) {
@@ -722,7 +736,9 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                                         {videoInfo.loadSpeed}
                                       </div>
                                       <div className='text-orange-600 dark:text-orange-400 font-medium text-xs'>
-                                        {videoInfo.pingTime}ms
+                                        {videoInfo.pingTime > 0
+                                          ? `${videoInfo.pingTime}ms`
+                                          : '未测得'}
                                       </div>
                                     </div>
                                   );

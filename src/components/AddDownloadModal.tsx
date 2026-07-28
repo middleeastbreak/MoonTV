@@ -3,6 +3,7 @@
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { isMobileDownloadDevice } from '@/lib/download-season';
 import { M3U8Task, parseM3U8, StreamSaverMode } from '@/lib/m3u8-downloader';
 
 interface AddDownloadModalProps {
@@ -62,17 +63,22 @@ const AddDownloadModal = ({
   const [editableUrl, setEditableUrl] = useState('');
   const [editableTitle, setEditableTitle] = useState('');
   const [syncWithSkipConfig, setSyncWithSkipConfig] = useState(false);
+  const [capabilitiesChecked, setCapabilitiesChecked] = useState(false);
+  const [isAddingSeason, setIsAddingSeason] = useState(false);
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
 
   // 检测各种模式的支持情况
   const [modeSupport, setModeSupport] = useState({
     serviceWorker: false,
     fileSystem: false,
+    directoryPicker: false,
     blob: true, // Blob模式总是支持的
   });
 
   // 检测边下边存模式的支持情况
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      setIsMobileDevice(isMobileDownloadDevice(window.navigator.userAgent));
       // 动态导入，避免服务端渲染时执行
       Promise.all([
         import('@/lib/stream-saver-fallback'),
@@ -80,20 +86,32 @@ const AddDownloadModal = ({
       ])
         .then(([fallback, streamSaver]) => {
           const fileSystemSupported = fallback.supportsFileSystemAccess();
+          const directoryPickerSupported = fallback.supportsDirectoryPicker();
           const serviceWorkerSupported = streamSaver.isStreamSaverSupported();
 
           setModeSupport({
             serviceWorker: serviceWorkerSupported,
             fileSystem: fileSystemSupported,
+            directoryPicker: directoryPickerSupported,
             blob: true,
           });
+          setCapabilitiesChecked(true);
         })
         .catch((err) => {
           // eslint-disable-next-line no-console
           console.error('Failed to detect stream saver support:', err);
+          setCapabilitiesChecked(true);
         });
     }
   }, []);
+
+  useEffect(() => {
+    if (!capabilitiesChecked) return;
+    const unsupported =
+      (streamMode === 'service-worker' && !modeSupport.serviceWorker) ||
+      (streamMode === 'file-system' && !modeSupport.fileSystem);
+    if (unsupported) setStreamMode('disabled');
+  }, [capabilitiesChecked, modeSupport, streamMode]);
 
   // 从 localStorage 恢复用户配置
   useEffect(() => {
@@ -221,6 +239,22 @@ const AddDownloadModal = ({
   const handleAdd = () => {
     if (!task) return;
 
+    const effectiveStreamMode =
+      (streamMode === 'service-worker' && !modeSupport.serviceWorker) ||
+      (streamMode === 'file-system' && !modeSupport.fileSystem)
+        ? 'disabled'
+        : streamMode;
+    if (
+      isMobileDownloadDevice(window.navigator.userAgent) &&
+      effectiveStreamMode === 'disabled' &&
+      (task.totalSize || 0) > 500 * 1024 * 1024 &&
+      !window.confirm(
+        '该视频预计超过 500MB。移动浏览器的普通下载需要占用较多内存，可能被系统中止；建议分段下载。是否仍要继续？'
+      )
+    ) {
+      return;
+    }
+
     onAddTask({
       url: editableUrl,
       title: task.title,
@@ -229,7 +263,7 @@ const AddDownloadModal = ({
       rangeMode,
       startSegment,
       endSegment,
-      streamMode,
+      streamMode: effectiveStreamMode,
       maxRetries,
       parsedTask: task,
     });
@@ -242,13 +276,16 @@ const AddDownloadModal = ({
   };
 
   const handleAddSeason = async () => {
-    if (!onAddSeason || seasonEpisodes.length < 2) return;
-    const confirmed = window.confirm(
-      `将按顺序下载本季全部 ${seasonEpisodes.length} 集，每集保存为独立文件。是否继续？`
-    );
-    if (!confirmed) return;
-    let directoryHandle: FileSystemDirectoryHandle | undefined;
-    if (streamMode === 'file-system') {
+    if (!onAddSeason || seasonEpisodes.length < 2 || isAddingSeason) return;
+    if (isMobileDownloadDevice(window.navigator.userAgent)) {
+      window.alert(
+        '移动设备无法可靠地连续选择保存位置，浏览器也可能阻止自动下载多个文件。请改为逐集下载，避免文件丢失或重复保存。'
+      );
+      return;
+    }
+
+    setIsAddingSeason(true);
+    try {
       const picker = (
         window as Window & {
           showDirectoryPicker?: (options?: {
@@ -256,29 +293,34 @@ const AddDownloadModal = ({
           }) => Promise<FileSystemDirectoryHandle>;
         }
       ).showDirectoryPicker;
-      if (typeof picker !== 'function') {
+
+      let directoryHandle: FileSystemDirectoryHandle | undefined;
+      if (typeof picker === 'function') {
+        // 必须直接响应用户点击调用，避免浏览器丢失文件选择所需的用户手势。
+        directoryHandle = await picker({ mode: 'readwrite' });
+      } else {
         window.alert(
-          '当前浏览器不支持整季目录选择，请改用 Service Worker 流式下载或普通模式。'
+          '当前浏览器无法一次选择整季保存目录。为避免重复文件、逐集弹窗或保存失败，请改为逐集下载，或使用桌面 Chrome/Edge。'
         );
         return;
       }
-      try {
-        directoryHandle = await picker({ mode: 'readwrite' });
-      } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') return;
-        window.alert('无法打开保存目录，请检查浏览器的文件访问权限。');
-        return;
-      }
+
+      onAddSeason({
+        episodes: seasonEpisodes,
+        downloadType,
+        concurrency,
+        // 整季统一使用目录直写，避免浏览器多文件许可导致重复保存。
+        streamMode: 'file-system',
+        maxRetries,
+        directoryHandle,
+      });
+      handleClose();
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+      window.alert('无法打开保存目录，请检查浏览器的文件访问权限。');
+    } finally {
+      setIsAddingSeason(false);
     }
-    onAddSeason({
-      episodes: seasonEpisodes,
-      downloadType,
-      concurrency,
-      streamMode,
-      maxRetries,
-      directoryHandle,
-    });
-    handleClose();
   };
 
   // 处理关闭
@@ -437,7 +479,9 @@ const AddDownloadModal = ({
                     </span>
                   </div>
                   <div className='text-xs text-gray-500 dark:text-gray-400 ml-4'>
-                    内存下载，适合小文件（&lt;500MB）
+                    {isMobileDevice
+                      ? '下载完成后由系统询问保存位置，建议小于 500MB'
+                      : '内存下载，适合小文件（<500MB）'}
                   </div>
                 </div>
               </label>
@@ -517,6 +561,11 @@ const AddDownloadModal = ({
                     >
                       文件系统直写
                     </span>
+                    {modeSupport.fileSystem && (
+                      <span className='rounded bg-emerald-50 px-1.5 py-px text-[10px] font-medium leading-4 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-800'>
+                        推荐
+                      </span>
+                    )}
                   </div>
                   <div
                     className={`text-xs ml-4 ${
@@ -526,12 +575,17 @@ const AddDownloadModal = ({
                     }`}
                   >
                     {modeSupport.fileSystem
-                      ? '直接写入磁盘，无大小限制（推荐）'
+                      ? '直接写入磁盘，无大小限制'
                       : '不支持：需要Chrome/Edge浏览器'}
                   </div>
                 </div>
               </label>
             </div>
+            {onAddSeason && seasonEpisodes.length > 1 && (
+              <p className='mt-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'>
+                上方模式用于单集下载；整季下载为保证目录一致且不重复保存，会统一选择目录并使用文件系统直写。
+              </p>
+            )}
           </div>
 
           {/* 解析信息 */}
@@ -733,13 +787,25 @@ const AddDownloadModal = ({
             </button>
           </div>
           {onAddSeason && seasonEpisodes.length > 1 && (
-            <button
-              type='button'
-              onClick={handleAddSeason}
-              className='w-full rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition-colors hover:bg-emerald-700'
-            >
-              一键下载整季（{seasonEpisodes.length} 集）
-            </button>
+            <div className='space-y-2'>
+              <button
+                type='button'
+                onClick={handleAddSeason}
+                disabled={isAddingSeason}
+                className='w-full rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-wait disabled:bg-emerald-400'
+              >
+                {isAddingSeason
+                  ? '正在准备保存目录...'
+                  : `一键下载整季（${seasonEpisodes.length} 集）`}
+              </button>
+              <p className='text-center text-xs text-gray-500 dark:text-gray-400'>
+                {isMobileDevice
+                  ? '移动设备请逐集下载，避免浏览器阻止连续保存'
+                  : modeSupport.directoryPicker
+                  ? '整季下载会先选择一次目录并逐集写入；同名文件将覆盖'
+                  : '当前浏览器请逐集下载，避免连续保存失败'}
+              </p>
+            </div>
           )}
         </div>
       </div>

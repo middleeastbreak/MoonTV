@@ -3,6 +3,7 @@ import {
   getFailoverTimerAction,
   getPlaybackRecoveryAction,
   getSourceChangeRecoveryAction,
+  getSourceStartupRecoveryAction,
 } from '@/lib/playback-recovery';
 
 describe('playback recovery decisions', () => {
@@ -50,6 +51,15 @@ describe('playback recovery decisions', () => {
     ).toBe('failover');
     expect(
       getSourceChangeRecoveryAction({ online: false, elapsedMs: 30_000 })
+    ).toBe('wait-network');
+  });
+
+  it('fails over when the initial source never emits an error or becomes playable', () => {
+    expect(
+      getSourceStartupRecoveryAction({ online: true, elapsedMs: 30_000 })
+    ).toBe('failover');
+    expect(
+      getSourceStartupRecoveryAction({ online: false, elapsedMs: 30_000 })
     ).toBe('wait-network');
   });
 });

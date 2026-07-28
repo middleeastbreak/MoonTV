@@ -2,6 +2,8 @@
 import he from 'he';
 import Hls from 'hls.js';
 
+import type { SearchResult } from './types';
+
 function getDoubanImageProxyConfig(): {
   proxyType:
     | 'direct'
@@ -78,18 +80,9 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
       video.muted = true;
       video.preload = 'metadata';
 
-      // 测量网络延迟（ping时间） - 使用m3u8 URL而不是ts文件
-      const pingStart = performance.now();
+      // 测量实际播放清单请求的响应时间，避免额外 HEAD 请求失真。
+      let manifestRequestStart = performance.now();
       let pingTime = 0;
-
-      // 测量ping时间（使用m3u8 URL）
-      fetch(m3u8Url, { method: 'HEAD', mode: 'no-cors' })
-        .then(() => {
-          pingTime = performance.now() - pingStart;
-        })
-        .catch(() => {
-          pingTime = performance.now() - pingStart; // 记录到失败为止的时间
-        });
 
       // 固定使用hls.js加载
       const hls = new Hls();
@@ -161,6 +154,22 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
         fragmentStartTime = performance.now();
       });
 
+      hls.on(Hls.Events.MANIFEST_LOADING, () => {
+        manifestRequestStart = performance.now();
+      });
+
+      hls.on(Hls.Events.MANIFEST_LOADED, (event: any, data: any) => {
+        const loadingStart = data?.stats?.loading?.start;
+        const loadingEnd = data?.stats?.loading?.end;
+        const measuredTime =
+          typeof loadingStart === 'number' &&
+          typeof loadingEnd === 'number' &&
+          loadingEnd >= loadingStart
+            ? loadingEnd - loadingStart
+            : performance.now() - manifestRequestStart;
+        pingTime = Math.max(1, Math.round(measuredTime));
+      });
+
       // 监听片段加载完成，只需首个分片即可计算速度
       hls.on(Hls.Events.FRAG_LOADED, (event: any, data: any) => {
         if (
@@ -218,6 +227,21 @@ export async function getVideoResolutionFromM3u8(m3u8Url: string): Promise<{
   }
 }
 
+export function getSourceEpisodeForProbe(
+  source: Pick<SearchResult, 'episodes'>,
+  episodeIndex: number
+): string | null {
+  if (!Number.isInteger(episodeIndex) || episodeIndex < 0) return null;
+  return source.episodes?.[episodeIndex] || null;
+}
+
+export function getSourceProbeKey(
+  source: Pick<SearchResult, 'source' | 'id'>,
+  episodeIndex: number
+): string {
+  return `${source.source}-${source.id}-episode-${episodeIndex}`;
+}
+
 export function cleanHtmlTags(text: string): string {
   if (!text) return '';
 
@@ -240,18 +264,22 @@ export function getRequestTimeout(): number {
   if (typeof window === 'undefined') {
     return 30; // 服务器端返回默认值
   }
-  
+
   try {
     const savedTimeout = localStorage.getItem('requestTimeout');
     if (savedTimeout) {
       const timeoutSeconds = parseInt(savedTimeout, 10);
-      if (!isNaN(timeoutSeconds) && timeoutSeconds >= 1 && timeoutSeconds <= 60) {
+      if (
+        !isNaN(timeoutSeconds) &&
+        timeoutSeconds >= 1 &&
+        timeoutSeconds <= 60
+      ) {
         return timeoutSeconds;
       }
     }
   } catch (error) {
     console.warn('Failed to read timeout from localStorage:', error);
   }
-  
+
   return 30; // 默认30秒
 }

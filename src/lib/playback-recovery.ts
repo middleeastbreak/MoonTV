@@ -1,10 +1,7 @@
-export type PlaybackRecoveryAction =
-  | 'none'
-  | 'wait-network'
-  | 'failover';
+export type PlaybackRecoveryAction = 'none' | 'wait-network' | 'failover';
 
 export const AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS = 12;
-export const SOURCE_CHANGE_TIMEOUT_MS = 25_000;
+export const SOURCE_STARTUP_TIMEOUT_MS = 25_000;
 
 export function getPlaybackRecoveryAction(input: {
   online: boolean;
@@ -28,6 +25,13 @@ export function getSourceChangeRecoveryAction(input: {
   online: boolean;
   elapsedMs: number;
 }): PlaybackRecoveryAction {
+  return getSourceStartupRecoveryAction(input);
+}
+
+export function getSourceStartupRecoveryAction(input: {
+  online: boolean;
+  elapsedMs: number;
+}): PlaybackRecoveryAction {
   if (!input.online) return 'wait-network';
-  return input.elapsedMs >= SOURCE_CHANGE_TIMEOUT_MS ? 'failover' : 'none';
+  return input.elapsedMs >= SOURCE_STARTUP_TIMEOUT_MS ? 'failover' : 'none';
 }

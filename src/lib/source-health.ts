@@ -96,6 +96,46 @@ function healthScore(record: SourceHealthRecord | undefined, now: number) {
   );
 }
 
+function playbackHistoryTier(record: SourceHealthRecord | undefined) {
+  if (!record || record.successes + record.failures === 0) return 0;
+  if (
+    record.consecutiveFailures > 0 ||
+    record.lastFailureAt > record.lastSuccessAt
+  ) {
+    return -1;
+  }
+  return record.successes > 0 ? 1 : 0;
+}
+
+export interface SourcePreferenceCandidate {
+  source: SearchResult;
+  probeScore: number;
+  originalIndex: number;
+}
+
+/** Rank actual playback experience ahead of the short source probe. */
+export function rankSourcesByPlaybackHealth(
+  candidates: SourcePreferenceCandidate[],
+  health: SourceHealthMap,
+  now = Date.now()
+): SourcePreferenceCandidate[] {
+  return [...candidates].sort((a, b) => {
+    const aRecord = health[sourceHealthKey(a.source)];
+    const bRecord = health[sourceHealthKey(b.source)];
+    const aTier = playbackHistoryTier(aRecord);
+    const bTier = playbackHistoryTier(bRecord);
+    if (aTier !== bTier) return bTier - aTier;
+
+    if (aTier !== 0) {
+      const scoreDifference =
+        healthScore(bRecord, now) - healthScore(aRecord, now);
+      if (scoreDifference) return scoreDifference;
+    }
+
+    return b.probeScore - a.probeScore || a.originalIndex - b.originalIndex;
+  });
+}
+
 export function selectFailoverSource(
   sources: SearchResult[],
   currentSource: string,

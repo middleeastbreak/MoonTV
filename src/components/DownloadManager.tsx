@@ -12,9 +12,11 @@ import { formatTime } from '@/lib/formatTime';
 import {
   downloadM3U8Video,
   DownloadProgress,
+  getEffectiveDownloadConcurrency,
   M3U8Task,
   parseM3U8,
   PauseResumeController,
+  resetStreamingDownloadProgress,
   StreamSaverMode,
 } from '@/lib/m3u8-downloader';
 
@@ -77,6 +79,7 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
   const isUnloading = useRef(false);
   // 防止重复触发合并的标记
   const mergingTaskIds = useRef(new Set<string>());
+  const batchDownloadActiveRef = useRef(false);
 
   // 同步 tasks 到 ref
   useEffect(() => {
@@ -299,26 +302,30 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
             (item) => item.status === 'error'
           );
 
-        // 边下边存模式下，失败片段已被跳过并写入文件，无需等待重试
-        // 只有普通模式下有失败片段才需要保持 abortController 等待手动重试
         if (hasFailedSegments && streamMode === 'disabled') {
           // 普通模式：有失败片段，保持 abortController 以便后续可以区分状态
           // eslint-disable-next-line no-console
           console.log(`⚠️ 任务 ${taskId} 有失败片段，保持下载状态等待重试`);
+        } else if (hasFailedSegments) {
+          // 防御性处理：流式下载不允许把含缺失片段的文件标记为完成。
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === taskId
+                ? {
+                    ...t,
+                    status: 'error' as const,
+                    abortController: undefined,
+                  }
+                : t
+            )
+          );
         } else {
-          // 边下边存模式或全部成功，清除 abortController
+          // 全部成功，清除 abortController
           setTasks((prev) =>
             prev.map((t) =>
               t.id === taskId ? { ...t, abortController: undefined } : t
             )
           );
-
-          if (hasFailedSegments && streamMode !== 'disabled') {
-            // eslint-disable-next-line no-console
-            console.log(
-              `✅ 边下边存模式：任务 ${taskId} 已完成，失败片段已跳过`
-            );
-          }
         }
       } catch (error) {
         if (error instanceof Error && error.message === '下载已取消') {
@@ -512,6 +519,18 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
   useEffect(() => {
     let cancelled = false;
     const handleAddBatchEvent = async (event: Event) => {
+      if (batchDownloadActiveRef.current) {
+        // 防止重复事件或连续点击创建两份相同的整季任务。
+        void Swal.fire({
+          icon: 'info',
+          title: '整季下载正在进行',
+          text: '请等待当前整季任务结束后再添加新的整季任务。',
+          customClass: { container: 'z-[11000]' },
+        });
+        return;
+      }
+      batchDownloadActiveRef.current = true;
+
       const config = (event as CustomEvent).detail as {
         episodes: Array<{ url: string; title: string }>;
         downloadType: 'TS' | 'MP4';
@@ -535,70 +554,74 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
         })),
       ]);
 
-      await runSeasonDownloadQueue(queue, async (episode, index) => {
-        if (cancelled) return;
-        const taskId = episode.id;
-        try {
-          const parsedTask = await parseM3U8(episode.url);
+      try {
+        await runSeasonDownloadQueue(queue, async (episode, index) => {
           if (cancelled) return;
-          parsedTask.title = episode.title;
-          parsedTask.type = config.downloadType;
-          const controller = new AbortController();
-          const pauseResumeController = new PauseResumeController();
-          const completeStreamRef = {
-            current: null as (() => Promise<void>) | null,
-          };
-          const taskConfig = {
-            downloadType: config.downloadType,
-            concurrency: config.concurrency,
-            rangeMode: false,
-            startSegment: 1,
-            endSegment: parsedTask.tsUrlList.length,
-            streamMode: config.streamMode,
-            maxRetries: config.maxRetries ?? 3,
-            parsedTask,
-          };
-          setTasks((previous) =>
-            previous.map((task) =>
-              task.id === taskId
-                ? {
-                    ...task,
-                    status: 'downloading',
-                    total: parsedTask.tsUrlList.length,
-                    config: taskConfig,
-                    parsedTask,
-                    abortController: controller,
-                    pauseResumeController,
-                    completeStreamRef,
-                  }
-                : task
-            )
-          );
-          await executeDownload(
-            taskId,
-            parsedTask,
-            controller,
-            pauseResumeController,
-            config.downloadType,
-            config.concurrency,
-            false,
-            1,
-            parsedTask.tsUrlList.length,
-            config.streamMode,
-            config.maxRetries ?? 3,
-            completeStreamRef,
-            config.directoryHandle
-          );
-        } catch (error) {
-          // eslint-disable-next-line no-console
-          console.error(`第 ${index + 1} 集解析失败:`, error);
-          setTasks((previous) =>
-            previous.map((task) =>
-              task.id === taskId ? { ...task, status: 'error' } : task
-            )
-          );
-        }
-      });
+          const taskId = episode.id;
+          try {
+            const parsedTask = await parseM3U8(episode.url);
+            if (cancelled) return;
+            parsedTask.title = episode.title;
+            parsedTask.type = config.downloadType;
+            const controller = new AbortController();
+            const pauseResumeController = new PauseResumeController();
+            const completeStreamRef = {
+              current: null as (() => Promise<void>) | null,
+            };
+            const taskConfig = {
+              downloadType: config.downloadType,
+              concurrency: config.concurrency,
+              rangeMode: false,
+              startSegment: 1,
+              endSegment: parsedTask.tsUrlList.length,
+              streamMode: config.streamMode,
+              maxRetries: config.maxRetries ?? 3,
+              parsedTask,
+            };
+            setTasks((previous) =>
+              previous.map((task) =>
+                task.id === taskId
+                  ? {
+                      ...task,
+                      status: 'downloading',
+                      total: parsedTask.tsUrlList.length,
+                      config: taskConfig,
+                      parsedTask,
+                      abortController: controller,
+                      pauseResumeController,
+                      completeStreamRef,
+                    }
+                  : task
+              )
+            );
+            await executeDownload(
+              taskId,
+              parsedTask,
+              controller,
+              pauseResumeController,
+              config.downloadType,
+              config.concurrency,
+              false,
+              1,
+              parsedTask.tsUrlList.length,
+              config.streamMode,
+              config.maxRetries ?? 3,
+              completeStreamRef,
+              config.directoryHandle
+            );
+          } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error(`第 ${index + 1} 集解析失败:`, error);
+            setTasks((previous) =>
+              previous.map((task) =>
+                task.id === taskId ? { ...task, status: 'error' } : task
+              )
+            );
+          }
+        });
+      } finally {
+        batchDownloadActiveRef.current = false;
+      }
     };
 
     window.addEventListener('addDownloadBatch', handleAddBatchEvent);
@@ -879,7 +902,27 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
 
             return;
           } else {
-            // 有失败片段，不启动下载，等待手动重试
+            if (isStreamMode) {
+              // 已中止的流无法补写旧文件，用户继续时从头创建完整文件。
+              resetStreamingDownloadProgress(parsedTaskToUse);
+              setTasks((prev) =>
+                prev.map((t) =>
+                  t.id === taskId
+                    ? {
+                        ...t,
+                        status: 'waiting' as const,
+                        progress: 0,
+                        current: 0,
+                        parsedTask: { ...parsedTaskToUse },
+                      }
+                    : t
+                )
+              );
+              startTaskDownload(taskId, parsedTaskToUse);
+              return;
+            }
+
+            // 普通模式保留已成功片段，等待手动重试失败部分。
             // eslint-disable-next-line no-console
             console.log(`⚠️ 范围内有 ${errorCount} 个片段失败，等待手动重试`);
             return;
@@ -1054,7 +1097,11 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
                             {task.config.downloadType} 格式
                           </span>
                           <span className='inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400'>
-                            {task.config.concurrency} 线程
+                            {getEffectiveDownloadConcurrency(
+                              task.config.concurrency,
+                              task.config.streamMode || 'disabled'
+                            )}{' '}
+                            线程
                           </span>
                           {task.config.rangeMode &&
                             (() => {
@@ -1118,182 +1165,189 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
                     </div>
                     <div className='flex items-center gap-2 flex-shrink-0'>
                       {/* 立即保存按钮 */}
-                      {task.parsedTask && (
-                        <button
-                          onClick={async () => {
-                            // 防止重复触发
-                            if (mergingTaskIds.current.has(task.id)) return;
-                            // 类型检查：确保 parsedTask 存在
-                            if (!task.parsedTask) return;
+                      {task.parsedTask &&
+                        !(
+                          task.status === 'error' &&
+                          task.config?.streamMode !== 'disabled'
+                        ) && (
+                          <button
+                            onClick={async () => {
+                              // 防止重复触发
+                              if (mergingTaskIds.current.has(task.id)) return;
+                              // 类型检查：确保 parsedTask 存在
+                              if (!task.parsedTask) return;
 
-                            const streamMode =
-                              task.config?.streamMode || 'disabled';
+                              const streamMode =
+                                task.config?.streamMode || 'disabled';
 
-                            // 边下边存模式：提示用户确认并完成流
-                            if (streamMode !== 'disabled') {
-                              const result = await Swal.fire({
-                                title: '立即保存',
-                                text: '立即保存将跳过后续片段下载，直接完成下载。文件将包含目前已下载的片段。\n\n是否继续？',
-                                icon: 'warning',
-                                showCancelButton: true,
-                                confirmButtonText: '确定',
-                                cancelButtonText: '取消',
-                                customClass: {
-                                  container: 'z-[11000]',
-                                },
-                              });
-                              if (!result.isConfirmed) return;
-                              // 调用完成流函数来关闭流并完成下载
-                              if (task.completeStreamRef?.current) {
-                                try {
-                                  // 先标记为正在提前完成，避免错误处理覆盖状态
-                                  setTasks((prev) =>
-                                    prev.map((t) =>
-                                      t.id === task.id
-                                        ? { ...t, isEarlyCompleting: true }
-                                        : t
-                                    )
-                                  );
-
-                                  // 先取消后续下载，避免继续下载
-                                  if (task.abortController) {
-                                    task.abortController.abort();
-                                  }
-
-                                  // 等待一小段时间，确保 abort 信号已传播，错误处理已检查 isEarlyCompleting
-                                  await new Promise((resolve) =>
-                                    setTimeout(resolve, 100)
-                                  );
-
-                                  // 然后完成流（这会调用 onProgress 更新进度为 100%）
-                                  await task.completeStreamRef.current();
-
-                                  // 最后更新状态为完成（使用函数式更新确保获取最新状态）
-                                  setTasks((prev) =>
-                                    prev.map((t) => {
-                                      if (t.id === task.id) {
-                                        return {
-                                          ...t,
-                                          status: 'completed' as const,
-                                          progress: 100,
-                                          current: t.total,
-                                          abortController: undefined,
-                                          // 保留 isEarlyCompleting 标记一段时间，防止错误处理覆盖状态
-                                          // 稍后通过 setTimeout 清除
-                                        };
-                                      }
-                                      return t;
-                                    })
-                                  );
-
-                                  // 延迟清除 isEarlyCompleting 标记，确保错误处理已经检查过
-                                  setTimeout(() => {
+                              // 边下边存模式：提示用户确认并完成流
+                              if (streamMode !== 'disabled') {
+                                const result = await Swal.fire({
+                                  title: '立即保存',
+                                  text: '立即保存将跳过后续片段下载，直接完成下载。文件将包含目前已下载的片段。\n\n是否继续？',
+                                  icon: 'warning',
+                                  showCancelButton: true,
+                                  confirmButtonText: '确定',
+                                  cancelButtonText: '取消',
+                                  customClass: {
+                                    container: 'z-[11000]',
+                                  },
+                                });
+                                if (!result.isConfirmed) return;
+                                // 调用完成流函数来关闭流并完成下载
+                                if (task.completeStreamRef?.current) {
+                                  try {
+                                    // 先标记为正在提前完成，避免错误处理覆盖状态
                                     setTasks((prev) =>
                                       prev.map((t) =>
-                                        t.id === task.id &&
-                                        t.status === 'completed'
+                                        t.id === task.id
+                                          ? { ...t, isEarlyCompleting: true }
+                                          : t
+                                      )
+                                    );
+
+                                    // 先取消后续下载，避免继续下载
+                                    if (task.abortController) {
+                                      task.abortController.abort();
+                                    }
+
+                                    // 等待一小段时间，确保 abort 信号已传播，错误处理已检查 isEarlyCompleting
+                                    await new Promise((resolve) =>
+                                      setTimeout(resolve, 100)
+                                    );
+
+                                    // 然后完成流（这会调用 onProgress 更新进度为 100%）
+                                    await task.completeStreamRef.current();
+
+                                    // 最后更新状态为完成（使用函数式更新确保获取最新状态）
+                                    setTasks((prev) =>
+                                      prev.map((t) => {
+                                        if (t.id === task.id) {
+                                          return {
+                                            ...t,
+                                            status: 'completed' as const,
+                                            progress: 100,
+                                            current: t.total,
+                                            abortController: undefined,
+                                            // 保留 isEarlyCompleting 标记一段时间，防止错误处理覆盖状态
+                                            // 稍后通过 setTimeout 清除
+                                          };
+                                        }
+                                        return t;
+                                      })
+                                    );
+
+                                    // 延迟清除 isEarlyCompleting 标记，确保错误处理已经检查过
+                                    setTimeout(() => {
+                                      setTasks((prev) =>
+                                        prev.map((t) =>
+                                          t.id === task.id &&
+                                          t.status === 'completed'
+                                            ? { ...t, isEarlyCompleting: false }
+                                            : t
+                                        )
+                                      );
+                                    }, 1000);
+                                  } catch (error) {
+                                    // eslint-disable-next-line no-console
+                                    console.error('完成下载失败:', error);
+                                    Swal.fire({
+                                      icon: 'error',
+                                      title: '完成下载失败',
+                                      text:
+                                        error instanceof Error
+                                          ? error.message
+                                          : String(error),
+                                    });
+                                    // 清除标记并恢复状态
+                                    setTasks((prev) =>
+                                      prev.map((t) =>
+                                        t.id === task.id
                                           ? { ...t, isEarlyCompleting: false }
                                           : t
                                       )
                                     );
-                                  }, 1000);
-                                } catch (error) {
-                                  // eslint-disable-next-line no-console
-                                  console.error('完成下载失败:', error);
+                                  }
+                                } else {
                                   Swal.fire({
                                     icon: 'error',
-                                    title: '完成下载失败',
-                                    text:
-                                      error instanceof Error
-                                        ? error.message
-                                        : String(error),
+                                    title: '无法完成下载',
+                                    text: '流未初始化',
                                   });
-                                  // 清除标记并恢复状态
-                                  setTasks((prev) =>
-                                    prev.map((t) =>
-                                      t.id === task.id
-                                        ? { ...t, isEarlyCompleting: false }
-                                        : t
-                                    )
-                                  );
                                 }
-                              } else {
-                                Swal.fire({
-                                  icon: 'error',
-                                  title: '无法完成下载',
-                                  text: '流未初始化',
-                                });
-                              }
-                              return;
-                            }
-
-                            // 普通模式：合并并下载
-                            mergingTaskIds.current.add(task.id);
-                            try {
-                              const { mergeSegments, triggerDownload } =
-                                await import('@/lib/m3u8-downloader');
-                              const { transmuxTSToMP4 } = await import(
-                                '@/lib/mp4-transmuxer'
-                              );
-                              const { startSegment, endSegment } =
-                                task.parsedTask.rangeDownload;
-                              const downloadType =
-                                task.config?.downloadType || 'TS';
-                              // 按顺序收集已下载片段
-                              const segments: ArrayBuffer[] = [];
-                              for (
-                                let i = startSegment - 1;
-                                i < endSegment;
-                                i++
-                              ) {
-                                const segment =
-                                  task.parsedTask.downloadedSegments?.get(i);
-                                if (segment) segments.push(segment);
-                              }
-                              if (segments.length === 0) {
-                                alert('没有可合并的片段数据！');
                                 return;
                               }
-                              let blob: Blob;
-                              if (downloadType === 'MP4') {
-                                const totalDuration =
-                                  task.parsedTask.durationSecond || 0;
-                                const totalSegments =
-                                  endSegment - startSegment + 1;
-                                const rangeDuration =
-                                  (totalDuration / totalSegments) *
-                                  segments.length;
-                                blob = transmuxTSToMP4(segments, rangeDuration);
-                              } else {
-                                blob = mergeSegments(segments, downloadType);
+
+                              // 普通模式：合并并下载
+                              mergingTaskIds.current.add(task.id);
+                              try {
+                                const { mergeSegments, triggerDownload } =
+                                  await import('@/lib/m3u8-downloader');
+                                const { transmuxTSToMP4 } = await import(
+                                  '@/lib/mp4-transmuxer'
+                                );
+                                const { startSegment, endSegment } =
+                                  task.parsedTask.rangeDownload;
+                                const downloadType =
+                                  task.config?.downloadType || 'TS';
+                                // 按顺序收集已下载片段
+                                const segments: ArrayBuffer[] = [];
+                                for (
+                                  let i = startSegment - 1;
+                                  i < endSegment;
+                                  i++
+                                ) {
+                                  const segment =
+                                    task.parsedTask.downloadedSegments?.get(i);
+                                  if (segment) segments.push(segment);
+                                }
+                                if (segments.length === 0) {
+                                  alert('没有可合并的片段数据！');
+                                  return;
+                                }
+                                let blob: Blob;
+                                if (downloadType === 'MP4') {
+                                  const totalDuration =
+                                    task.parsedTask.durationSecond || 0;
+                                  const totalSegments =
+                                    endSegment - startSegment + 1;
+                                  const rangeDuration =
+                                    (totalDuration / totalSegments) *
+                                    segments.length;
+                                  blob = transmuxTSToMP4(
+                                    segments,
+                                    rangeDuration
+                                  );
+                                } else {
+                                  blob = mergeSegments(segments, downloadType);
+                                }
+                                triggerDownload(
+                                  blob,
+                                  task.parsedTask.title,
+                                  downloadType
+                                );
+                              } catch (e) {
+                                alert(
+                                  '合并下载失败：' +
+                                    (e instanceof Error ? e.message : e)
+                                );
+                              } finally {
+                                setTimeout(
+                                  () => mergingTaskIds.current.delete(task.id),
+                                  2000
+                                );
                               }
-                              triggerDownload(
-                                blob,
-                                task.parsedTask.title,
-                                downloadType
-                              );
-                            } catch (e) {
-                              alert(
-                                '合并下载失败：' +
-                                  (e instanceof Error ? e.message : e)
-                              );
-                            } finally {
-                              setTimeout(
-                                () => mergingTaskIds.current.delete(task.id),
-                                2000
-                              );
+                            }}
+                            className='p-2 hover:bg-green-100 dark:hover:bg-green-900/30 text-green-600 dark:text-green-400 rounded-lg transition-colors'
+                            title={
+                              task.config?.streamMode === 'disabled'
+                                ? '立即合并已下载片段并导出文件'
+                                : '立即保存（将跳过后续片段下载，直接完成下载）'
                             }
-                          }}
-                          className='p-2 hover:bg-green-100 dark:hover:bg-green-900/30 text-green-600 dark:text-green-400 rounded-lg transition-colors'
-                          title={
-                            task.config?.streamMode === 'disabled'
-                              ? '立即合并已下载片段并导出文件'
-                              : '立即保存（将跳过后续片段下载，直接完成下载）'
-                          }
-                        >
-                          <Download className='h-4 w-4' />
-                        </button>
-                      )}
+                          >
+                            <Download className='h-4 w-4' />
+                          </button>
+                        )}
                       {/* 查看片段按钮 */}
                       {task.parsedTask && (
                         <button
@@ -1318,7 +1372,12 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
                         <button
                           onClick={() => resumeTask(task.id)}
                           className='p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors'
-                          title='开始/继续'
+                          title={
+                            task.status === 'error' &&
+                            task.config?.streamMode !== 'disabled'
+                              ? '源站连接失败，点击从头重新下载'
+                              : '开始/继续'
+                          }
                         >
                           <Play className='h-4 w-4' />
                         </button>
@@ -1364,6 +1423,12 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
                         {task.current} / {task.total} 片段
                       </span>
                     </div>
+                    {task.status === 'error' &&
+                      task.config?.streamMode !== 'disabled' && (
+                        <p className='text-xs text-red-600 dark:text-red-400'>
+                          源站连接失败，流式下载已安全停止；点击继续按钮可从头重试
+                        </p>
+                      )}
                   </div>
                 </div>
               ))
