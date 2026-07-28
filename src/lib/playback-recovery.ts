@@ -4,6 +4,36 @@ export const AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS = 12;
 export const SOURCE_STARTUP_TIMEOUT_MS = 25_000;
 const HAVE_CURRENT_DATA = 2;
 
+export type PlaybackAttemptResult =
+  | 'playing'
+  | 'await-user'
+  | 'user-paused'
+  | 'retry';
+
+interface PlayableMedia {
+  play: () => Promise<void> | void;
+}
+
+export async function attemptPlaybackAfterCanPlay(
+  media: PlayableMedia,
+  input: { userPaused: boolean }
+): Promise<PlaybackAttemptResult> {
+  if (input.userPaused) return 'user-paused';
+
+  try {
+    await media.play();
+    return 'playing';
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      (error.name === 'NotAllowedError' || error.name === 'SecurityError')
+    ) {
+      return 'await-user';
+    }
+    return 'retry';
+  }
+}
+
 export function isPlaybackAwaitingUserAction(input: {
   paused: boolean;
   readyState: number;

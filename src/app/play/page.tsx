@@ -32,6 +32,7 @@ import {
   isMobileBatteryDevice,
 } from '@/lib/mobile-danmaku';
 import {
+  attemptPlaybackAfterCanPlay,
   AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS,
   getFailoverTimerAction,
   getPlaybackRecoveryAction,
@@ -466,6 +467,10 @@ function PlayPageClient() {
   const failoverCountRef = useRef(0);
   const sourceStartedAtRef = useRef(Date.now());
   const sourceHealthRecordedKeyRef = useRef('');
+  const userPausedPlaybackRef = useRef(false);
+  const playbackTransitionRef = useRef(false);
+  const autoplayAttemptedRef = useRef(false);
+  const playbackAwaitingUserActionRef = useRef(false);
   const diagnosticsRef = useRef({
     source: currentSource,
     quality: '自动',
@@ -817,6 +822,13 @@ function PlayPageClient() {
     failoverDisabledRef.current = false;
     failoverCountRef.current = 0;
     diagnosticsRef.current.failoverCount = 0;
+  };
+
+  const prepareAutomaticPlayback = () => {
+    userPausedPlaybackRef.current = false;
+    playbackTransitionRef.current = true;
+    autoplayAttemptedRef.current = false;
+    playbackAwaitingUserActionRef.current = false;
   };
 
   // 清理播放器资源的统一函数
@@ -1628,6 +1640,7 @@ function PlayPageClient() {
       const video = watchedPlayer.video as HTMLVideoElement | undefined;
       if (
         video &&
+        playbackAwaitingUserActionRef.current &&
         isPlaybackAwaitingUserAction({
           paused: video.paused,
           readyState: video.readyState,
@@ -1642,8 +1655,12 @@ function PlayPageClient() {
         online: navigator.onLine,
         stalledForMs: Date.now() - startedAt,
         fatalRecoveryExhausted: false,
-        paused: video?.paused,
-        readyState: video?.readyState,
+        paused: playbackAwaitingUserActionRef.current
+          ? video?.paused
+          : undefined,
+        readyState: playbackAwaitingUserActionRef.current
+          ? video?.readyState
+          : undefined,
       });
       if (action === 'wait-network') {
         pendingFailoverAfterReconnectRef.current = true;
@@ -2173,6 +2190,7 @@ function PlayPageClient() {
 
     sourceStartedAtRef.current = Date.now();
     diagnosticsRef.current.source = currentSourceRef.current;
+    prepareAutomaticPlayback();
 
     // 非WebKit浏览器且播放器已存在，使用switch方法切换
     if (!isWebkit && artPlayerRef.current) {
@@ -2585,10 +2603,14 @@ function PlayPageClient() {
 
       // 监听播放状态变化，控制 Wake Lock
       artPlayerRef.current.on('play', () => {
+        userPausedPlaybackRef.current = false;
+        playbackAwaitingUserActionRef.current = false;
         requestWakeLock();
       });
 
       artPlayerRef.current.on('video:playing', () => {
+        playbackTransitionRef.current = false;
+        playbackAwaitingUserActionRef.current = false;
         clearFailoverCountdown();
         clearPlaybackStallTimer();
         clearSourceStartupTimer();
@@ -2605,6 +2627,12 @@ function PlayPageClient() {
       });
 
       artPlayerRef.current.on('pause', () => {
+        if (
+          artPlayerRef.current === initializedPlayer &&
+          !playbackTransitionRef.current
+        ) {
+          userPausedPlaybackRef.current = true;
+        }
         releaseWakeLock();
         saveCurrentPlayProgress();
       });
@@ -2688,16 +2716,24 @@ function PlayPageClient() {
 
         // 隐藏换源加载状态
         setIsVideoLoading(false);
-        window.setTimeout(() => {
+        window.setTimeout(async () => {
           if (artPlayerRef.current !== initializedPlayer) return;
           const video = initializedPlayer.video as HTMLVideoElement;
-          if (
-            isPlaybackAwaitingUserAction({
-              paused: video.paused,
-              readyState: video.readyState,
-            })
-          ) {
+          if (autoplayAttemptedRef.current) return;
+          autoplayAttemptedRef.current = true;
+
+          const playbackResult = await attemptPlaybackAfterCanPlay(video, {
+            userPaused: userPausedPlaybackRef.current,
+          });
+          if (artPlayerRef.current !== initializedPlayer) return;
+
+          playbackTransitionRef.current = false;
+          if (playbackResult === 'await-user') {
+            playbackAwaitingUserActionRef.current = true;
             initializedPlayer.notice.show = '视频已就绪，请点击播放';
+          } else if (playbackResult === 'retry') {
+            autoplayAttemptedRef.current = false;
+            startPlaybackStallWatchdog('视频已加载但未能开始播放');
           }
         }, 0);
       });

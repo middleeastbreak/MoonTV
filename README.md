@@ -12,9 +12,9 @@ MoonTV 是一个基于 Next.js 的影视聚合播放器，支持多源搜索、H
 
 ## 当前版本
 
-- 正式版：`4.1.1`
-- Git 标签：`v4.1.1`
-- [v4.1.1 Release](https://github.com/middleeastbreak/MoonTV/releases/tag/v4.1.1)
+- 正式版：`4.1.2`
+- Git 标签：`v4.1.2`
+- [v4.1.2 Release](https://github.com/middleeastbreak/MoonTV/releases/tag/v4.1.2)
 - [完整变更记录](CHANGELOG)
 
 ## 主要功能
@@ -28,6 +28,12 @@ MoonTV 是一个基于 Next.js 的影视聚合播放器，支持多源搜索、H
 - iPad、手机和桌面端响应式布局
 - localStorage、Redis、Kvrocks、Upstash 和 Cloudflare D1 存储
 - PWA 安装、TVBox 接口和 M3U8 下载
+
+## v4.1.2 更新
+
+- 首次播放、切换集数和自动换源会在视频真正就绪后再次主动尝试播放。
+- 只有浏览器明确禁止自动播放时才提示点击，播放源异常仍继续执行恢复和换源。
+- 用户主动暂停后不会被自动恢复，避免播放器抢播。
 
 ## v4.1.1 更新
 
@@ -78,14 +84,14 @@ MoonTV 是一个基于 Next.js 的影视聚合播放器，支持多源搜索、H
 
 ### 1. 下载并导入镜像
 
-从 [v4.1.1 Release](https://github.com/middleeastbreak/MoonTV/releases/tag/v4.1.1) 下载：
+从 [v4.1.2 Release](https://github.com/middleeastbreak/MoonTV/releases/tag/v4.1.2) 下载：
 
-- `moontv-4.1.1-linux-amd64.tar`
-- `moontv-4.1.1-linux-amd64.tar.sha256`
+- `moontv-4.1.2-linux-amd64.tar`
+- `moontv-4.1.2-linux-amd64.tar.sha256`
 
 ```bash
-sha256sum -c moontv-4.1.1-linux-amd64.tar.sha256
-docker load -i moontv-4.1.1-linux-amd64.tar
+sha256sum -c moontv-4.1.2-linux-amd64.tar.sha256
+docker load -i moontv-4.1.2-linux-amd64.tar
 ```
 
 ### 2. 准备视频源
@@ -134,7 +140,7 @@ docker run -d \
   -e NEXT_PUBLIC_STORAGE_TYPE='localstorage' \
   -e NEXT_PUBLIC_SITE_NAME='MoonTV' \
   -v /opt/moontv/config.json:/app/config.json:ro \
-  moontv:4.1.1
+  moontv:4.1.2
 ```
 
 `config.json` 是只读挂载来源，容器运行期间不要删除宿主机上的文件。修改视频源后重启容器即可，无需重新构建镜像。
@@ -148,7 +154,7 @@ docker logs --tail 100 moontv
 
 完整的 Nginx 配置、弹幕 API 和部署验证步骤见：
 
-- [MoonTV 4.1.1 Docker 直接部署说明](artifacts/docker/DEPLOYMENT-4.1.1.md)
+- [MoonTV 4.1.2 Docker 直接部署说明](artifacts/docker/DEPLOYMENT-4.1.2.md)
 
 使用弹幕时，建议通过 Nginx 将 `/danmu-api/` 同域转发到弹幕容器，避免 HTTPS 混合内容。文档中的 `YOUR_DANMU_TOKEN` 必须在部署时替换为自己的 Token，并保证两个容器的配置一致。
 
