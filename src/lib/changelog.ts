@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: '4.1.1',
+    date: '2026-07-29',
+    added: [],
+    changed: [
+      '手机和 iPad 的自动弹幕耗电提醒会显示在对应设置下方，手动匹配弹幕时也会给出短暂提醒',
+      '桌面端默认使用文件系统直写下载，移动端默认使用普通下载',
+    ],
+    fixed: [
+      '修复 iPad 自动换源后视频已经就绪但因浏览器限制未自动播放，导致继续重复换源的问题',
+      '修复 iPad 使用 Service Worker 流式下载时可能保存为无法播放的 `.ts.html` 文件的问题',
+    ],
+  },
+  {
     version: '4.1.0',
     date: '2026-07-28',
     added: [

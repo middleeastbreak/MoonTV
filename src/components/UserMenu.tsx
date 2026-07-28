@@ -21,6 +21,7 @@ import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import {
   initializeMobileDanmakuPolicy,
   isMobileBatteryDevice,
+  shouldShowDanmakuPowerWarning,
 } from '@/lib/mobile-danmaku';
 import { checkForUpdates, CURRENT_VERSION, UpdateStatus } from '@/lib/version';
 
@@ -59,7 +60,7 @@ export const UserMenu: React.FC = () => {
     useState(false);
 
   const [autoDanmakuEnabled, setAutoDanmakuEnabled] = useState(true);
-  const [showDanmakuPowerNotice, setShowDanmakuPowerNotice] = useState(false);
+  const [isMobileDanmakuDevice, setIsMobileDanmakuDevice] = useState(false);
   // 自动弹幕尝试次数设置，-1为无限尝试
   const [danmakuRetryCount, setDanmakuRetryCount] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -239,6 +240,7 @@ export const UserMenu: React.FC = () => {
         navigator
       );
       setAutoDanmakuEnabled(danmakuPolicy.autoEnabled);
+      setIsMobileDanmakuDevice(danmakuPolicy.isMobileBatteryDevice);
 
       const savedDanmakuRetryCount = localStorage.getItem('danmakuRetryCount');
       if (savedDanmakuRetryCount !== null) {
@@ -416,12 +418,6 @@ export const UserMenu: React.FC = () => {
   const handleAutoDanmakuToggle = (value: boolean) => {
     setAutoDanmakuEnabled(value);
     localStorage.setItem('autoDanmakuEnabled', JSON.stringify(value));
-    if (value && isMobileBatteryDevice(navigator)) {
-      setShowDanmakuPowerNotice(true);
-      window.setTimeout(() => setShowDanmakuPowerNotice(false), 5000);
-    } else {
-      setShowDanmakuPowerNotice(false);
-    }
   };
 
   const handleDanmakuRetryCountChange = (value: number) => {
@@ -995,12 +991,6 @@ export const UserMenu: React.FC = () => {
               </div>
             </label>
           </div>
-          {showDanmakuPowerNotice && (
-            <p className='mt-2 text-xs text-amber-600 dark:text-amber-400'>
-              弹幕会增加耗电和设备发热
-            </p>
-          )}
-
           {/* 默认流式搜索模式 */}
           <div className='flex items-center justify-between'>
             <div>
@@ -1098,6 +1088,14 @@ export const UserMenu: React.FC = () => {
               </div>
             </label>
           </div>
+          {shouldShowDanmakuPowerWarning(
+            autoDanmakuEnabled,
+            isMobileDanmakuDevice
+          ) && (
+            <p className='mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'>
+              自动匹配弹幕会增加耗电和设备发热
+            </p>
+          )}
           {/* 弹幕自动尝试次数设置 */}
           <div className='flex items-center justify-between mt-2'>
             <div>

@@ -41,6 +41,8 @@ interface AddDownloadModalProps {
 
 import { formatTime } from '@/lib/formatTime';
 
+const STREAM_MODE_DEFAULT_VERSION = 'desktop-file-system-v1';
+
 const AddDownloadModal = ({
   isOpen,
   onClose,
@@ -60,6 +62,10 @@ const AddDownloadModal = ({
   const [concurrency, setConcurrency] = useState(6);
   const [maxRetries, setMaxRetries] = useState(3); // 默认重试3次
   const [streamMode, setStreamMode] = useState<StreamSaverMode>('disabled');
+  const [streamPreferenceLoaded, setStreamPreferenceLoaded] = useState(false);
+  const [streamModeInitialized, setStreamModeInitialized] = useState(false);
+  const [savedStreamMode, setSavedStreamMode] =
+    useState<StreamSaverMode | null>(null);
   const [editableUrl, setEditableUrl] = useState('');
   const [editableTitle, setEditableTitle] = useState('');
   const [syncWithSkipConfig, setSyncWithSkipConfig] = useState(false);
@@ -88,6 +94,13 @@ const AddDownloadModal = ({
           const fileSystemSupported = fallback.supportsFileSystemAccess();
           const directoryPickerSupported = fallback.supportsDirectoryPicker();
           const serviceWorkerSupported = streamSaver.isStreamSaverSupported();
+          const isAppleMobile = streamSaver.isAppleMobileDownloadDevice(
+            window.navigator
+          );
+
+          setIsMobileDevice(
+            isMobileDownloadDevice(window.navigator.userAgent) || isAppleMobile
+          );
 
           setModeSupport({
             serviceWorker: serviceWorkerSupported,
@@ -105,14 +118,6 @@ const AddDownloadModal = ({
     }
   }, []);
 
-  useEffect(() => {
-    if (!capabilitiesChecked) return;
-    const unsupported =
-      (streamMode === 'service-worker' && !modeSupport.serviceWorker) ||
-      (streamMode === 'file-system' && !modeSupport.fileSystem);
-    if (unsupported) setStreamMode('disabled');
-  }, [capabilitiesChecked, modeSupport, streamMode]);
-
   // 从 localStorage 恢复用户配置
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -125,23 +130,73 @@ const AddDownloadModal = ({
       const savedStreamMode = localStorage.getItem(
         'streamMode'
       ) as StreamSaverMode | null;
+      const savedDefaultVersion = localStorage.getItem(
+        'streamModeDefaultVersion'
+      );
 
       if (savedDownloadType) setDownloadType(savedDownloadType);
       if (savedConcurrency) setConcurrency(parseInt(savedConcurrency, 10));
       if (savedMaxRetries) setMaxRetries(parseInt(savedMaxRetries, 10));
-      if (savedStreamMode) setStreamMode(savedStreamMode);
+      setSavedStreamMode(
+        savedDefaultVersion === STREAM_MODE_DEFAULT_VERSION
+          ? savedStreamMode
+          : null
+      );
+      setStreamPreferenceLoaded(true);
     }
   }, []);
 
+  // 首次使用时，桌面端默认使用文件系统直写；移动端使用普通模式。
+  useEffect(() => {
+    if (
+      !capabilitiesChecked ||
+      !streamPreferenceLoaded ||
+      streamModeInitialized
+    ) {
+      return;
+    }
+
+    const savedModeSupported =
+      savedStreamMode === 'disabled' ||
+      (savedStreamMode === 'service-worker' && modeSupport.serviceWorker) ||
+      (savedStreamMode === 'file-system' && modeSupport.fileSystem);
+
+    if (savedStreamMode && savedModeSupported) {
+      setStreamMode(savedStreamMode);
+    } else if (!isMobileDevice && modeSupport.fileSystem) {
+      setStreamMode('file-system');
+    } else {
+      setStreamMode('disabled');
+    }
+    setStreamModeInitialized(true);
+  }, [
+    capabilitiesChecked,
+    isMobileDevice,
+    modeSupport,
+    savedStreamMode,
+    streamModeInitialized,
+    streamPreferenceLoaded,
+  ]);
+
   // 保存用户配置到 localStorage
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && streamModeInitialized) {
       localStorage.setItem('downloadType', downloadType);
       localStorage.setItem('concurrency', concurrency.toString());
       localStorage.setItem('maxRetries', String(maxRetries));
       localStorage.setItem('streamMode', streamMode);
+      localStorage.setItem(
+        'streamModeDefaultVersion',
+        STREAM_MODE_DEFAULT_VERSION
+      );
     }
-  }, [downloadType, concurrency, maxRetries, streamMode]);
+  }, [
+    downloadType,
+    concurrency,
+    maxRetries,
+    streamMode,
+    streamModeInitialized,
+  ]);
 
   // 当模态框打开时，设置初始值
   useEffect(() => {
@@ -526,6 +581,8 @@ const AddDownloadModal = ({
                   >
                     {modeSupport.serviceWorker
                       ? '边下边存，无大小限制，适合超大文件'
+                      : isMobileDevice
+                      ? 'iPhone/iPad 不支持此模式，请使用普通下载'
                       : '不支持：需要HTTPS或本地环境'}
                   </div>
                 </div>

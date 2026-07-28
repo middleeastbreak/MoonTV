@@ -3,6 +3,7 @@ import {
   initializeMobileDanmakuPolicy,
   isMobileBatteryDevice,
   MOBILE_DANMAKU_POLICY_KEY,
+  shouldShowDanmakuPowerWarning,
 } from '@/lib/mobile-danmaku';
 
 function storage(initial: Record<string, string> = {}) {
@@ -60,5 +61,11 @@ describe('mobile danmaku policy', () => {
     });
     expect(policy.autoEnabled).toBe(true);
     expect(policy.visible).toBe(true);
+  });
+
+  it('keeps the power warning visible only while automatic danmaku is enabled on mobile', () => {
+    expect(shouldShowDanmakuPowerWarning(true, true)).toBe(true);
+    expect(shouldShowDanmakuPowerWarning(false, true)).toBe(false);
+    expect(shouldShowDanmakuPowerWarning(true, false)).toBe(false);
   });
 });

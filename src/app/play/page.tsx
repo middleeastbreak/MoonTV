@@ -29,12 +29,14 @@ import { buildSeasonDownloadEpisodes } from '@/lib/download-season';
 import {
   DANMAKU_VISIBLE_KEY,
   initializeMobileDanmakuPolicy,
+  isMobileBatteryDevice,
 } from '@/lib/mobile-danmaku';
 import {
   AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS,
   getFailoverTimerAction,
   getPlaybackRecoveryAction,
   getSourceStartupRecoveryAction,
+  isPlaybackAwaitingUserAction,
   SOURCE_STARTUP_TIMEOUT_MS,
 } from '@/lib/playback-recovery';
 import { destroyPlayerMedia } from '@/lib/player-cleanup';
@@ -1623,10 +1625,25 @@ function PlayPageClient() {
     playbackStallTimerRef.current = window.setTimeout(() => {
       playbackStallTimerRef.current = null;
       if (artPlayerRef.current !== watchedPlayer) return;
+      const video = watchedPlayer.video as HTMLVideoElement | undefined;
+      if (
+        video &&
+        isPlaybackAwaitingUserAction({
+          paused: video.paused,
+          readyState: video.readyState,
+        })
+      ) {
+        setIsVideoLoading(false);
+        pendingFailoverAfterReconnectRef.current = false;
+        watchedPlayer.notice.show = '视频已就绪，请点击播放';
+        return;
+      }
       const action = getPlaybackRecoveryAction({
         online: navigator.onLine,
         stalledForMs: Date.now() - startedAt,
         fatalRecoveryExhausted: false,
+        paused: video?.paused,
+        readyState: video?.readyState,
       });
       if (action === 'wait-network') {
         pendingFailoverAfterReconnectRef.current = true;
@@ -2614,6 +2631,7 @@ function PlayPageClient() {
         // 旧播放器的延迟事件不能关闭新播放器的加载蒙层。
         if (artPlayerRef.current !== initializedPlayer) return;
         clearFailoverCountdown();
+        clearPlaybackStallTimer();
         clearSourceStartupTimer();
         pendingFailoverForSourcesRef.current = null;
         const sourceHealthKey = `${currentSourceRef.current}:${currentIdRef.current}:${currentEpisodeIndexRef.current}`;
@@ -2670,6 +2688,18 @@ function PlayPageClient() {
 
         // 隐藏换源加载状态
         setIsVideoLoading(false);
+        window.setTimeout(() => {
+          if (artPlayerRef.current !== initializedPlayer) return;
+          const video = initializedPlayer.video as HTMLVideoElement;
+          if (
+            isPlaybackAwaitingUserAction({
+              paused: video.paused,
+              readyState: video.readyState,
+            })
+          ) {
+            initializedPlayer.notice.show = '视频已就绪，请点击播放';
+          }
+        }, 0);
       });
 
       // 监听视频时间更新事件，实现跳过片头片尾
@@ -3010,6 +3040,13 @@ function PlayPageClient() {
                       setSelectedDanmakuAnime(anime);
                       setSelectedDanmakuEpisode(episodeNumber);
                       setSelectedState(true);
+                      if (
+                        isMobileBatteryDevice(navigator) &&
+                        artPlayerRef.current
+                      ) {
+                        artPlayerRef.current.notice.show =
+                          '手动加载弹幕会增加耗电和设备发热';
+                      }
                     }}
                     onClose={() => {
                       setShowDanmakuSelector(false);

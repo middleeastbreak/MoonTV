@@ -39,6 +39,13 @@ export function isMobileBatteryDevice(navigatorLike: NavigatorLike): boolean {
   );
 }
 
+export function shouldShowDanmakuPowerWarning(
+  autoDanmakuEnabled: boolean,
+  isMobileDevice: boolean
+): boolean {
+  return autoDanmakuEnabled && isMobileDevice;
+}
+
 export function initializeMobileDanmakuPolicy(
   storage: StorageLike,
   navigatorLike: NavigatorLike

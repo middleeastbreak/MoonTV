@@ -27,6 +27,28 @@ describe('playback recovery decisions', () => {
     ).toBe('failover');
   });
 
+  it('waits for a user gesture instead of rejecting a playable paused source', () => {
+    expect(
+      getPlaybackRecoveryAction({
+        online: true,
+        stalledForMs: 15_000,
+        fatalRecoveryExhausted: false,
+        paused: true,
+        readyState: 3,
+      })
+    ).toBe('none');
+
+    expect(
+      getPlaybackRecoveryAction({
+        online: true,
+        stalledForMs: 15_000,
+        fatalRecoveryExhausted: false,
+        paused: true,
+        readyState: 0,
+      })
+    ).toBe('failover');
+  });
+
   it('fails over immediately after online HLS recovery is exhausted', () => {
     expect(
       getPlaybackRecoveryAction({

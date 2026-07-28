@@ -11,6 +11,29 @@ declare global {
   }
 }
 
+interface DownloadNavigator {
+  userAgent?: string;
+  platform?: string;
+  maxTouchPoints?: number;
+}
+
+/**
+ * iOS/iPadOS Safari cannot reliably turn the Service Worker navigation into a
+ * binary download. In particular, an iPad requesting the desktop site reports
+ * a Macintosh user agent and may save the response as `<filename>.html`.
+ */
+export function isAppleMobileDownloadDevice(device: DownloadNavigator): boolean {
+  const userAgent = device.userAgent || ''
+  const isIOSUserAgent = /iPhone|iPad|iPod|Macintosh.*Mobile/i.test(userAgent)
+  const isDesktopClassIPad = device.platform === 'MacIntel' && (device.maxTouchPoints || 0) > 1
+
+  return isIOSUserAgent || isDesktopClassIPad
+}
+
+export function isServiceWorkerDownloadSafe(device: DownloadNavigator): boolean {
+  return !isAppleMobileDownloadDevice(device)
+}
+
 // 检查是否为安全上下文（HTTPS）
 const isSecureContext = window.isSecureContext || location.protocol === 'https:'
 const isFirefox = 'MozAppearance' in document.documentElement.style
@@ -136,6 +159,10 @@ function makePopup(src: string): Transporter {
  * 创建写入流
  */
 export function createWriteStream(filename: string) {
+  if (!isServiceWorkerDownloadSafe(navigator)) {
+    throw new Error('iPhone/iPad 不支持 Service Worker 流式下载')
+  }
+
   let bytesWritten = 0
   let downloadUrl: string | null = null
   let mc: MessageChannel | null = null
@@ -292,5 +319,5 @@ export function createWriteStream(filename: string) {
  * 检查是否支持流式下载
  */
 export function isStreamSaverSupported(): boolean {
-  return !useBlobFallback
+  return !useBlobFallback && isServiceWorkerDownloadSafe(navigator)
 }
