@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { memo } from 'react';
+import { memo, Suspense } from 'react';
 
 import MobileBottomNav from './MobileBottomNav';
 import MobileHeader from './MobileHeader';
@@ -32,7 +32,9 @@ const ConditionalNav = () => {
       <MobileHeader showBackButton={false} />
 
       {/* 桌面端顶部导航栏 - 固定在根布局，避免页面切换时重新渲染 */}
-      <TopNav />
+      <Suspense fallback={null}>
+        <TopNav />
+      </Suspense>
 
       {/* 移动端底部导航 - 固定在根布局，避免页面切换时重新渲染 */}
       <div className='md:hidden'>

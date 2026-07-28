@@ -25,7 +25,19 @@ import {
   saveSkipConfig,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { buildSeasonDownloadEpisodes } from '@/lib/download-season';
+import {
+  DANMAKU_VISIBLE_KEY,
+  initializeMobileDanmakuPolicy,
+} from '@/lib/mobile-danmaku';
 import { destroyPlayerMedia } from '@/lib/player-cleanup';
+import {
+  formatPlaybackDiagnostics,
+  readSourceHealth,
+  recordSourceFailure,
+  recordSourceSuccess,
+  selectFailoverSource,
+} from '@/lib/source-health';
 import { SearchResult } from '@/lib/types';
 import { getRequestTimeout, getVideoResolutionFromM3u8 } from '@/lib/utils';
 
@@ -50,7 +62,10 @@ interface WakeLockSentinel {
   removeEventListener(type: 'release', listener: () => void): void;
 }
 
-function mergeDanmakuControls(player: HTMLElement): (() => void) | null {
+function mergeDanmakuControls(
+  player: HTMLElement,
+  onVisibilityChange?: (visible: boolean) => void
+): (() => void) | null {
   const toolbar = player.querySelector<HTMLElement>(
     '.artplayer-plugin-danmuku'
   );
@@ -77,10 +92,13 @@ function mergeDanmakuControls(player: HTMLElement): (() => void) | null {
   config.setAttribute('role', 'button');
   config.setAttribute('aria-label', '弹幕设置');
 
+  let initialized = false;
   const syncVisibility = () => {
     const visible = player.dataset.danmukuVisible !== 'false';
     visibilityRow.setAttribute('aria-checked', String(visible));
     visibilityRow.dataset.enabled = String(visible);
+    if (initialized) onVisibilityChange?.(visible);
+    initialized = true;
   };
   syncVisibility();
 
@@ -156,6 +174,9 @@ function PlayPageClient() {
   const [nextEpisodeCountdown, setNextEpisodeCountdown] = useState<
     number | null
   >(null);
+  const [failoverCountdown, setFailoverCountdown] = useState<number | null>(
+    null
+  );
 
   // 收藏状态
   const [favorited, setFavorited] = useState(false);
@@ -247,10 +268,9 @@ function PlayPageClient() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const savedAuto = localStorage.getItem('autoDanmakuEnabled');
-    if (savedAuto !== null) {
-      setAutoDanmakuEnabled(JSON.parse(savedAuto));
-    }
+    const policy = initializeMobileDanmakuPolicy(localStorage, navigator);
+    setAutoDanmakuEnabled(policy.autoEnabled);
+    danmakuConfigRef.current.visible = policy.visible;
 
     const savedPlatform = localStorage.getItem('preferredDanmakuPlatform');
     if (savedPlatform) {
@@ -357,7 +377,7 @@ function PlayPageClient() {
     danmuku: '',
     speed: 7.5,
     margin: [10, '75%'],
-    opacity: 1,
+    opacity: 0.75,
     color: '#FFFFFF',
     mode: 0,
     modes: [0, 1, 2],
@@ -391,6 +411,10 @@ function PlayPageClient() {
 
   // 换源相关状态
   const [availableSources, setAvailableSources] = useState<SearchResult[]>([]);
+  const availableSourcesRef = useRef<SearchResult[]>([]);
+  useEffect(() => {
+    availableSourcesRef.current = availableSources;
+  }, [availableSources]);
   const [sourceSearchLoading, setSourceSearchLoading] = useState(false);
   const [sourceSearchError, setSourceSearchError] = useState<string | null>(
     null
@@ -416,6 +440,19 @@ function PlayPageClient() {
   const danmukuPluginInstanceRef = useRef<any>(null); // 弹幕插件实例
   const danmakuControlsCleanupRef = useRef<(() => void) | null>(null);
   const lastDanmakuUrlRef = useRef<string>(''); // 上一次加载的弹幕 URL
+  const failoverTimerRef = useRef<number | null>(null);
+  const failoverAttemptedRef = useRef<Set<string>>(new Set());
+  const failoverDisabledRef = useRef(false);
+  const failoverCountRef = useRef(0);
+  const sourceStartedAtRef = useRef(Date.now());
+  const diagnosticsRef = useRef({
+    source: currentSource,
+    quality: '自动',
+    bufferSeconds: 0,
+    recoveryAttempts: 0,
+    lastError: '',
+    failoverCount: 0,
+  });
 
   // Wake Lock 相关
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -726,6 +763,22 @@ function PlayPageClient() {
     } catch (err) {
       console.warn('Wake Lock 释放失败:', err);
     }
+  };
+
+  const clearFailoverCountdown = () => {
+    if (failoverTimerRef.current !== null) {
+      window.clearInterval(failoverTimerRef.current);
+      failoverTimerRef.current = null;
+    }
+    setFailoverCountdown(null);
+  };
+
+  const resetAutomaticFailover = () => {
+    clearFailoverCountdown();
+    failoverAttemptedRef.current.clear();
+    failoverDisabledRef.current = false;
+    failoverCountRef.current = 0;
+    diagnosticsRef.current.failoverCount = 0;
   };
 
   // 清理播放器资源的统一函数
@@ -1286,9 +1339,11 @@ function PlayPageClient() {
   const handleSourceChange = async (
     newSource: string,
     newId: string,
-    newTitle: string
+    newTitle: string,
+    options: { automatic?: boolean } = {}
   ) => {
     try {
+      if (!options.automatic) resetAutomaticFailover();
       // 显示换源加载状态
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
@@ -1298,7 +1353,11 @@ function PlayPageClient() {
       console.log('换源前当前播放时间:', currentPlayTime);
 
       // 清除前一个历史记录
-      if (currentSourceRef.current && currentIdRef.current) {
+      if (
+        !options.automatic &&
+        currentSourceRef.current &&
+        currentIdRef.current
+      ) {
         try {
           await deletePlayRecord(
             currentSourceRef.current,
@@ -1311,7 +1370,11 @@ function PlayPageClient() {
       }
 
       // 清除并设置下一个跳过片头片尾配置
-      if (currentSourceRef.current && currentIdRef.current) {
+      if (
+        !options.automatic &&
+        currentSourceRef.current &&
+        currentIdRef.current
+      ) {
         try {
           await deleteSkipConfig(
             currentSourceRef.current,
@@ -1323,7 +1386,7 @@ function PlayPageClient() {
         }
       }
 
-      const newDetail = availableSources.find(
+      const newDetail = availableSourcesRef.current.find(
         (source) => source.source === newSource && source.id === newId
       );
       if (!newDetail) {
@@ -1364,12 +1427,63 @@ function PlayPageClient() {
       setCurrentId(newId);
       setDetail(newDetail);
       setCurrentEpisodeIndex(targetIndex);
+      sourceStartedAtRef.current = Date.now();
+      diagnosticsRef.current.source = newSource;
       // 加载蒙层由新播放器的 video:canplay 事件关闭，弱网时不会提前露出黑屏。
     } catch (err) {
       // 隐藏换源加载状态
       setIsVideoLoading(false);
       setError(err instanceof Error ? err.message : '换源失败');
     }
+  };
+
+  const scheduleAutomaticFailover = (lastError: string) => {
+    if (
+      failoverDisabledRef.current ||
+      failoverTimerRef.current !== null ||
+      failoverCountRef.current >= 2
+    ) {
+      return;
+    }
+
+    diagnosticsRef.current.lastError = lastError;
+    recordSourceFailure(localStorage, currentSourceRef.current);
+    failoverAttemptedRef.current.add(
+      `${currentSourceRef.current}:${currentIdRef.current}`
+    );
+    const nextSource = selectFailoverSource(
+      availableSourcesRef.current,
+      currentSourceRef.current,
+      currentIdRef.current,
+      currentEpisodeIndexRef.current,
+      failoverAttemptedRef.current,
+      readSourceHealth(localStorage)
+    );
+    if (!nextSource) {
+      if (artPlayerRef.current) {
+        artPlayerRef.current.notice.show = '当前线路恢复失败，请手动换源';
+      }
+      return;
+    }
+
+    let remaining = 5;
+    setFailoverCountdown(remaining);
+    failoverTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      setFailoverCountdown(remaining);
+      if (remaining > 0) return;
+
+      clearFailoverCountdown();
+      failoverAttemptedRef.current.add(`${nextSource.source}:${nextSource.id}`);
+      failoverCountRef.current += 1;
+      diagnosticsRef.current.failoverCount = failoverCountRef.current;
+      void handleSourceChange(
+        nextSource.source,
+        nextSource.id,
+        nextSource.title,
+        { automatic: true }
+      );
+    }, 1000);
   };
 
   useEffect(() => {
@@ -1386,6 +1500,7 @@ function PlayPageClient() {
   const handleEpisodeChange = async (episodeNumber: number) => {
     if (episodeNumber === currentEpisodeIndexRef.current) return;
     if (episodeNumber >= 0 && episodeNumber < totalEpisodes) {
+      resetAutomaticFailover();
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
       // 在更换集数前保存当前播放进度
@@ -1425,6 +1540,7 @@ function PlayPageClient() {
     const d = detailRef.current;
     const idx = currentEpisodeIndexRef.current;
     if (d && d.episodes && idx > 0) {
+      resetAutomaticFailover();
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
       if (artPlayerRef.current && !artPlayerRef.current.paused) {
@@ -1443,6 +1559,7 @@ function PlayPageClient() {
     const d = detailRef.current;
     const idx = currentEpisodeIndexRef.current;
     if (d && d.episodes && idx < d.episodes.length - 1) {
+      resetAutomaticFailover();
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
       if (artPlayerRef.current && !artPlayerRef.current.paused) {
@@ -1705,6 +1822,10 @@ function PlayPageClient() {
       if (saveIntervalRef.current) {
         clearInterval(saveIntervalRef.current);
       }
+      if (failoverTimerRef.current !== null) {
+        window.clearInterval(failoverTimerRef.current);
+        failoverTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -1864,6 +1985,8 @@ function PlayPageClient() {
     if (artPlayerRef.current) {
       cleanupPlayer();
     }
+    sourceStartedAtRef.current = Date.now();
+    diagnosticsRef.current.source = currentSourceRef.current;
 
     try {
       // 创建新的播放器实例
@@ -1975,6 +2098,9 @@ function PlayPageClient() {
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
               const activePlayer = artPlayerRef.current;
+              diagnosticsRef.current.quality = hls.levels[0]?.height
+                ? `${hls.levels[0].height}P`
+                : '自动';
               if (
                 hls.levels.length <= 1 ||
                 !activePlayer ||
@@ -2013,6 +2139,10 @@ function PlayPageClient() {
               if (!activePlayer || activePlayer.video !== video) return;
               if (data.fatal) {
                 recoveryAttempts += 1;
+                diagnosticsRef.current.recoveryAttempts = recoveryAttempts;
+                diagnosticsRef.current.lastError = `${data.type}: ${
+                  data.details || 'unknown'
+                }`;
                 activePlayer.notice.show = `播放中断，正在进行第 ${recoveryAttempts} 次恢复…`;
                 switch (data.type) {
                   case Hls.ErrorTypes.NETWORK_ERROR:
@@ -2026,15 +2156,21 @@ function PlayPageClient() {
                         }
                       }, Math.min(4000, 500 * 2 ** recoveryAttempts));
                     } else {
-                      activePlayer.notice.show = '当前线路恢复失败，请尝试换源';
+                      activePlayer.notice.show =
+                        '当前线路恢复失败，准备自动换源';
+                      scheduleAutomaticFailover('网络恢复次数已用尽');
                     }
                     break;
                   case Hls.ErrorTypes.MEDIA_ERROR:
                     if (recoveryAttempts <= 2) hls.recoverMediaError();
-                    else activePlayer.notice.show = '视频解码失败，请尝试换源';
+                    else {
+                      activePlayer.notice.show = '视频解码失败，准备自动换源';
+                      scheduleAutomaticFailover('媒体解码恢复次数已用尽');
+                    }
                     break;
                   default:
                     console.log('无法恢复的错误');
+                    scheduleAutomaticFailover('播放器发生不可恢复错误');
                     hls.destroy();
                     break;
                 }
@@ -2144,6 +2280,21 @@ function PlayPageClient() {
             },
           },
           {
+            name: '播放诊断',
+            html: '播放诊断',
+            tooltip: '复制脱敏信息',
+            onClick: function () {
+              const diagnostics = formatPlaybackDiagnostics(
+                diagnosticsRef.current
+              );
+              void navigator.clipboard?.writeText(diagnostics);
+              if (artPlayerRef.current) {
+                artPlayerRef.current.notice.show = '播放诊断信息已复制';
+              }
+              return '已复制';
+            },
+          },
+          {
             name: '弹幕源',
             html: '弹幕源',
             tooltip: currentTooltip || '未选择',
@@ -2183,8 +2334,26 @@ function PlayPageClient() {
               // ignore
             }
             danmakuControlsCleanupRef.current?.();
+            const policy = initializeMobileDanmakuPolicy(
+              localStorage,
+              navigator
+            );
             danmakuControlsCleanupRef.current = mergeDanmakuControls(
-              artPlayerRef.current.template.$player as HTMLElement
+              artPlayerRef.current.template.$player as HTMLElement,
+              (visible) => {
+                const wasVisible =
+                  localStorage.getItem(DANMAKU_VISIBLE_KEY) === 'true';
+                localStorage.setItem(DANMAKU_VISIBLE_KEY, String(visible));
+                danmakuConfigRef.current.visible = visible;
+                if (
+                  visible &&
+                  !wasVisible &&
+                  policy.isMobileBatteryDevice &&
+                  artPlayerRef.current
+                ) {
+                  artPlayerRef.current.notice.show = '弹幕会增加耗电和设备发热';
+                }
+              }
             );
           }
         }
@@ -2235,9 +2404,20 @@ function PlayPageClient() {
 
       // 监听视频可播放事件，这时恢复播放进度更可靠
       const initializedPlayer = artPlayerRef.current;
+      let sourceHealthRecorded = false;
       initializedPlayer.on('video:canplay', () => {
         // 旧播放器的延迟事件不能关闭新播放器的加载蒙层。
         if (artPlayerRef.current !== initializedPlayer) return;
+        if (!sourceHealthRecorded) {
+          recordSourceSuccess(
+            localStorage,
+            currentSourceRef.current,
+            Date.now() - sourceStartedAtRef.current
+          );
+          sourceHealthRecorded = true;
+          diagnosticsRef.current.recoveryAttempts = 0;
+          diagnosticsRef.current.lastError = '';
+        }
 
         // 若存在需要恢复的播放进度，则跳转
         let resumedAt: number | null = null;
@@ -2344,6 +2524,19 @@ function PlayPageClient() {
       });
 
       artPlayerRef.current.on('video:timeupdate', () => {
+        const video = artPlayerRef.current?.video as
+          | HTMLVideoElement
+          | undefined;
+        if (video?.buffered?.length) {
+          try {
+            diagnosticsRef.current.bufferSeconds = Math.max(
+              0,
+              video.buffered.end(video.buffered.length - 1) - video.currentTime
+            );
+          } catch (_) {
+            diagnosticsRef.current.bufferSeconds = 0;
+          }
+        }
         const now = Date.now();
         let interval = 5000;
         if (process.env.NEXT_PUBLIC_STORAGE_TYPE === 'upstash') {
@@ -2635,6 +2828,26 @@ function PlayPageClient() {
                   </div>
                 )}
 
+                {failoverCountdown !== null && (
+                  <div className='absolute right-4 bottom-14 z-[450] flex items-center gap-3 rounded-lg bg-black/85 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-sm'>
+                    <span>{failoverCountdown} 秒后自动切换备用播放源</span>
+                    <button
+                      type='button'
+                      onClick={() => {
+                        failoverDisabledRef.current = true;
+                        clearFailoverCountdown();
+                        if (artPlayerRef.current) {
+                          artPlayerRef.current.notice.show =
+                            '已取消本集自动换源';
+                        }
+                      }}
+                      className='rounded bg-white/15 px-2 py-1 hover:bg-white/25'
+                    >
+                      取消
+                    </button>
+                  </div>
+                )}
+
                 {/* 换源加载蒙层 */}
                 {isVideoLoading && (
                   <div className='absolute inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center z-[500] transition-all duration-300'>
@@ -2813,6 +3026,19 @@ function PlayPageClient() {
           }
           setShowAddDownload(false);
         }}
+        onAddSeason={(config) => {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('addDownloadBatch', { detail: config })
+            );
+          }
+          setShowAddDownload(false);
+        }}
+        seasonEpisodes={buildSeasonDownloadEpisodes(
+          videoTitle,
+          detail?.episodes || [],
+          detail?.episodes_titles || []
+        )}
         initialUrl={videoUrl || ''}
         initialTitle={`${videoTitle}${
           totalEpisodes > 1

@@ -1,7 +1,14 @@
 'use client';
 
 import { usePathname, useSearchParams } from 'next/navigation';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import {
+  createContext,
+  Suspense,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
 
 interface NavigationLoadingContextType {
   isLoading: boolean;
@@ -21,10 +28,18 @@ const NavigationLoadingContext = createContext<NavigationLoadingContextType>({
 
 export const useNavigationLoading = () => useContext(NavigationLoadingContext);
 
+function SearchParamsLoadingReset({ stopLoading }: { stopLoading: () => void }) {
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const timer = window.setTimeout(stopLoading, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchParams, stopLoading]);
+  return null;
+}
+
 export function NavigationLoadingProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
   const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   const startLoading = useCallback(() => {
     setIsLoading(true);
@@ -42,12 +57,14 @@ export function NavigationLoadingProvider({ children }: { children: React.ReactN
     }, 300); // 给一个短暂延迟确保页面已经渲染
 
     return () => clearTimeout(timer);
-  }, [pathname, searchParams]);
+  }, [pathname]);
 
   return (
     <NavigationLoadingContext.Provider value={{ isLoading, startLoading, stopLoading }}>
+      <Suspense fallback={null}>
+        <SearchParamsLoadingReset stopLoading={stopLoading} />
+      </Suspense>
       {children}
     </NavigationLoadingContext.Provider>
   );
 }
-

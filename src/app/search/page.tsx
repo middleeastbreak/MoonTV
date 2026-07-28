@@ -12,6 +12,7 @@ import {
   getSearchHistory,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { aggregateSearchResults } from '@/lib/search-aggregation';
 import { SearchResult } from '@/lib/types';
 import { getRequestTimeout } from '@/lib/utils';
 
@@ -31,6 +32,12 @@ function SearchPageClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [fuzzyResults, setFuzzyResults] = useState<SearchResult[]>([]);
+  const [fuzzyLoading, setFuzzyLoading] = useState(false);
+  const [fuzzySearchEnabled] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem('enableFuzzySearch') !== 'false';
+  });
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [failedSources, setFailedSources] = useState<
     { name: string; key: string; error: string }[]
@@ -122,18 +129,7 @@ function SearchPageClient() {
 
   // 聚合后的结果
   const aggregatedResults = useMemo(() => {
-    const map = new Map<string, SearchResult[]>();
-    searchResults.forEach((item) => {
-      // 使用标准化的标题（移除多余空格但保留单词间的单个空格）作为聚合键的一部分
-      const normalizedTitle = item.title.trim().replace(/\s+/g, ' ');
-      const key = `${normalizedTitle}-${item.year || 'unknown'}-${
-        item.episodes.length === 1 ? 'movie' : 'tv'
-      }`;
-      const arr = map.get(key) || [];
-      arr.push(item);
-      map.set(key, arr);
-    });
-    return Array.from(map.entries()).sort((a, b) => {
+    return aggregateSearchResults(searchResults).sort((a, b) => {
       const aExactMatch = a[1][0].title
         .toLowerCase()
         .includes(searchQuery.trim().toLowerCase());
@@ -151,6 +147,17 @@ function SearchPageClient() {
       return aYear > bYear ? -1 : 1;
     });
   }, [searchResults]);
+
+  const aggregatedFuzzyResults = useMemo(() => {
+    const originalKeys = new Set(
+      searchResults.map((item) => `${item.source}:${item.id}`)
+    );
+    return aggregateSearchResults(
+      fuzzyResults.filter(
+        (item) => !originalKeys.has(`${item.source}:${item.id}`)
+      )
+    );
+  }, [fuzzyResults, searchResults]);
 
   // 用于筛选后的聚合结果，保证类型安全
   const filteredAggregatedResults: [string, SearchResult[]][] = useMemo(() => {
@@ -283,6 +290,42 @@ function SearchPageClient() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const fetchFuzzyResults = async (
+    query: string,
+    originalResults: SearchResult[],
+    controller: AbortController,
+    timeoutSeconds: number
+  ) => {
+    if (!fuzzySearchEnabled) return;
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const hasDirectMatch = originalResults.some((result) =>
+      result.title.toLocaleLowerCase().includes(normalizedQuery)
+    );
+    if (hasDirectMatch) return;
+
+    setFuzzyLoading(true);
+    try {
+      const params = new URLSearchParams({
+        q: query.trim(),
+        timeout: timeoutSeconds.toString(),
+      });
+      if (searchSources.length > 0)
+        params.set('sources', searchSources.join(','));
+      const response = await fetch(`/api/search/fuzzy?${params.toString()}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (abortControllerRef.current === controller) {
+        setFuzzyResults(data.results || []);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+    } finally {
+      if (abortControllerRef.current === controller) setFuzzyLoading(false);
+    }
+  };
+
   const fetchSearchResults = async (query: string) => {
     abortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -291,6 +334,8 @@ function SearchPageClient() {
     try {
       setIsLoading(true);
       setSearchResults([]);
+      setFuzzyResults([]);
+      setFuzzyLoading(false);
       setFailedSources([]);
       setSearchProgress({ completed: 0, total: 0 });
       setShowResults(true);
@@ -313,9 +358,16 @@ function SearchPageClient() {
 
       if (!streamEnabled) {
         const json = await response.json();
-        setSearchResults(json.results || []);
+        const originalResults = json.results || [];
+        setSearchResults(originalResults);
         setFailedSources(json.failedSources || []);
         setIsLoading(false);
+        await fetchFuzzyResults(
+          query,
+          originalResults,
+          controller,
+          timeoutSeconds
+        );
       } else {
         if (!response.body) return;
         const reader = response.body.getReader();
@@ -323,6 +375,7 @@ function SearchPageClient() {
         let done = false;
         let buffer = '';
         let firstResult = true;
+        const collectedResults: SearchResult[] = [];
 
         while (!done) {
           const { value, done: readerDone } = await reader.read();
@@ -350,6 +403,7 @@ function SearchPageClient() {
                   });
                 }
                 if (json.pageResults?.length) {
+                  collectedResults.push(...json.pageResults);
                   setSearchResults((prev) => [...prev, ...json.pageResults]);
                   if (firstResult) {
                     setIsLoading(false);
@@ -367,8 +421,10 @@ function SearchPageClient() {
         if (buffer.trim()) {
           try {
             const json = JSON.parse(buffer);
-            if (json.pageResults)
+            if (json.pageResults) {
+              collectedResults.push(...json.pageResults);
               setSearchResults((prev) => [...prev, ...json.pageResults]);
+            }
             if (json.failedSources) setFailedSources(json.failedSources);
           } catch {
             //
@@ -376,11 +432,19 @@ function SearchPageClient() {
         }
 
         setIsLoading(false);
+        await fetchFuzzyResults(
+          query,
+          collectedResults,
+          controller,
+          timeoutSeconds
+        );
       }
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       setSearchResults([]);
-      setFailedSources([{ name: '搜索服务', key: 'request', error: '请求失败，请稍后重试' }]);
+      setFailedSources([
+        { name: '搜索服务', key: 'request', error: '请求失败，请稍后重试' },
+      ]);
       setIsLoading(false);
     }
   };
@@ -846,7 +910,9 @@ function SearchPageClient() {
                 })}
 
                 {sortedAggregatedResults.exact.length === 0 &&
-                  sortedAggregatedResults.others.length === 0 && (
+                  sortedAggregatedResults.others.length === 0 &&
+                  aggregatedFuzzyResults.length === 0 &&
+                  !fuzzyLoading && (
                     <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
                       未找到相关结果
                     </div>
@@ -865,6 +931,43 @@ function SearchPageClient() {
                   </div>
                 )}
               </div>
+
+              {(fuzzyLoading || aggregatedFuzzyResults.length > 0) && (
+                <div className='mt-8'>
+                  <div className='mb-7 flex items-center gap-3'>
+                    <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
+                      可能想找
+                    </h2>
+                    <span className='rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'>
+                      相近标题 / 拼音匹配
+                    </span>
+                  </div>
+                  {fuzzyLoading ? (
+                    <div
+                      role='status'
+                      className='flex items-center gap-2 py-6 text-sm text-gray-500 dark:text-gray-400'
+                    >
+                      <div className='h-5 w-5 animate-spin rounded-full border-b-2 border-amber-500'></div>
+                      正在查找相近标题…
+                    </div>
+                  ) : (
+                    <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-14 sm:gap-y-20 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8'>
+                      {aggregatedFuzzyResults.map(([mapKey, group], index) => (
+                        <div
+                          key={`fuzzy-${mapKey}-${index}`}
+                          className='w-full'
+                        >
+                          <VideoCard
+                            from='search'
+                            items={group}
+                            query={searchQuery.trim()}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 更多结果 */}
               {sortedAggregatedResults.others.length > 0 && (

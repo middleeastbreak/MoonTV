@@ -14,6 +14,7 @@ MoonTV 是一个基于 Next.js 的影视聚合播放器，支持多源搜索、H
 
 - 正式版：`4.0.4`
 - Git 标签：`v4.0.4`
+- 本地预览版：`4.1.0-preview.1`（未推送远端）
 - [v4.0.4 Release](https://github.com/middleeastbreak/MoonTV/releases/tag/v4.0.4)
 - [完整变更记录](CHANGELOG)
 
@@ -28,6 +29,15 @@ MoonTV 是一个基于 Next.js 的影视聚合播放器，支持多源搜索、H
 - iPad、手机和桌面端响应式布局
 - localStorage、Redis、Kvrocks、Upstash 和 Cloudflare D1 存储
 - PWA 安装、TVBox 接口和 M3U8 下载
+
+## v4.1.0-preview.1 预览功能
+
+- 搜索保留原有精确结果；无直接匹配时，额外显示可关闭的相近标题和拼音纠错建议。
+- 同一季的空格、数字和季数写法会合并；不同季、不同年份及电影解说保持独立，例如“问心”和“问心 2”分开显示。
+- 播放源彻底恢复失败后，5 秒倒计时自动切换健康的备用源，可取消且最多尝试两个源。
+- 手机和 iPad 首次升级默认关闭自动弹幕，手动打开时提示耗电和发热；默认透明度为 75%。
+- 下载弹窗增加一键下载当前整季，按集串行执行并分别显示下载结果。
+- MP4 转封装逻辑未改动，避免在缺少可复现样本时引入新的声画同步风险。
 
 ## v4.0.4 更新
 
@@ -131,6 +141,7 @@ docker logs --tail 100 moontv
 完整的 Nginx 配置、弹幕 API 和部署验证步骤见：
 
 - [MoonTV 4.0.4 Docker 直接部署说明](artifacts/docker/DEPLOYMENT-4.0.4.md)
+- [MoonTV 4.1.0-preview.1 Docker 直接部署说明](artifacts/docker/DEPLOYMENT-4.1.0-preview.1.md)
 
 使用弹幕时，建议通过 Nginx 将 `/danmu-api/` 同域转发到弹幕容器，避免 HTTPS 混合内容。文档中的 `YOUR_DANMU_TOKEN` 必须在部署时替换为自己的 Token，并保证两个容器的配置一致。
 
