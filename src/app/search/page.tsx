@@ -30,6 +30,7 @@ function SearchPageClient() {
   const searchParams = useSearchParams();
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [searchCompleted, setSearchCompleted] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [fuzzyResults, setFuzzyResults] = useState<SearchResult[]>([]);
@@ -127,15 +128,19 @@ function SearchPageClient() {
     return true;
   });
 
+  const isDirectResult = (result: SearchResult, query: string) =>
+    result.direct_match ??
+    result.title.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+
   // 聚合后的结果
   const aggregatedResults = useMemo(() => {
     return aggregateSearchResults(searchResults).sort((a, b) => {
-      const aExactMatch = a[1][0].title
-        .toLowerCase()
-        .includes(searchQuery.trim().toLowerCase());
-      const bExactMatch = b[1][0].title
-        .toLowerCase()
-        .includes(searchQuery.trim().toLowerCase());
+      const aExactMatch = a[1].some((result) =>
+        isDirectResult(result, searchQuery)
+      );
+      const bExactMatch = b[1].some((result) =>
+        isDirectResult(result, searchQuery)
+      );
       if (aExactMatch && !bExactMatch) return -1;
       if (!aExactMatch && bExactMatch) return 1;
 
@@ -203,9 +208,9 @@ function SearchPageClient() {
           [item],
         ]);
 
-    const query = (searchParams.get('q') ?? '').trim().toLowerCase();
+    const query = (searchParams.get('q') ?? '').trim();
     const isExact = (group: SearchResult[]) =>
-      group[0].title.toLowerCase().includes(query);
+      group.some((result) => isDirectResult(result, query));
 
     const getYearValue = (group: SearchResult[]) => {
       const y = group[0].year;
@@ -297,9 +302,8 @@ function SearchPageClient() {
     timeoutSeconds: number
   ) => {
     if (!fuzzySearchEnabled) return;
-    const normalizedQuery = query.trim().toLocaleLowerCase();
     const hasDirectMatch = originalResults.some((result) =>
-      result.title.toLocaleLowerCase().includes(normalizedQuery)
+      isDirectResult(result, query)
     );
     if (hasDirectMatch) return;
 
@@ -333,6 +337,7 @@ function SearchPageClient() {
 
     try {
       setIsLoading(true);
+      setSearchCompleted(false);
       setSearchResults([]);
       setFuzzyResults([]);
       setFuzzyLoading(false);
@@ -341,6 +346,7 @@ function SearchPageClient() {
       setShowResults(true);
 
       const params = new URLSearchParams({ q: query.trim() });
+      params.set('match_version', '2');
       params.set('stream', streamEnabled ? '1' : '0');
 
       // 添加选中的搜索源到请求参数
@@ -362,6 +368,7 @@ function SearchPageClient() {
         setSearchResults(originalResults);
         setFailedSources(json.failedSources || []);
         setIsLoading(false);
+        setSearchCompleted(true);
         await fetchFuzzyResults(
           query,
           originalResults,
@@ -432,6 +439,7 @@ function SearchPageClient() {
         }
 
         setIsLoading(false);
+        setSearchCompleted(true);
         await fetchFuzzyResults(
           query,
           collectedResults,
@@ -446,6 +454,7 @@ function SearchPageClient() {
         { name: '搜索服务', key: 'request', error: '请求失败，请稍后重试' },
       ]);
       setIsLoading(false);
+      setSearchCompleted(true);
     }
   };
 
@@ -912,6 +921,7 @@ function SearchPageClient() {
                 {sortedAggregatedResults.exact.length === 0 &&
                   sortedAggregatedResults.others.length === 0 &&
                   aggregatedFuzzyResults.length === 0 &&
+                  searchCompleted &&
                   !fuzzyLoading && (
                     <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
                       未找到相关结果
@@ -932,7 +942,8 @@ function SearchPageClient() {
                 )}
               </div>
 
-              {(fuzzyLoading || aggregatedFuzzyResults.length > 0) && (
+              {searchCompleted &&
+                (fuzzyLoading || aggregatedFuzzyResults.length > 0) && (
                 <div className='mt-8'>
                   <div className='mb-7 flex items-center gap-3'>
                     <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
@@ -967,10 +978,10 @@ function SearchPageClient() {
                     </div>
                   )}
                 </div>
-              )}
+                )}
 
               {/* 更多结果 */}
-              {sortedAggregatedResults.others.length > 0 && (
+              {searchCompleted && sortedAggregatedResults.others.length > 0 && (
                 <div className='mt-8'>
                   <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200 mb-7'>
                     更多结果

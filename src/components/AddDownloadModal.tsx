@@ -26,6 +26,7 @@ interface AddDownloadModalProps {
     concurrency: number;
     streamMode: StreamSaverMode;
     maxRetries: number;
+    directoryHandle?: FileSystemDirectoryHandle;
   }) => void;
   seasonEpisodes?: Array<{ url: string; title: string }>;
   initialUrl?: string;
@@ -240,18 +241,42 @@ const AddDownloadModal = ({
     setEditableTitle('');
   };
 
-  const handleAddSeason = () => {
+  const handleAddSeason = async () => {
     if (!onAddSeason || seasonEpisodes.length < 2) return;
     const confirmed = window.confirm(
       `将按顺序下载本季全部 ${seasonEpisodes.length} 集，每集保存为独立文件。是否继续？`
     );
     if (!confirmed) return;
+    let directoryHandle: FileSystemDirectoryHandle | undefined;
+    if (streamMode === 'file-system') {
+      const picker = (
+        window as Window & {
+          showDirectoryPicker?: (options?: {
+            mode: 'readwrite';
+          }) => Promise<FileSystemDirectoryHandle>;
+        }
+      ).showDirectoryPicker;
+      if (typeof picker !== 'function') {
+        window.alert(
+          '当前浏览器不支持整季目录选择，请改用 Service Worker 流式下载或普通模式。'
+        );
+        return;
+      }
+      try {
+        directoryHandle = await picker({ mode: 'readwrite' });
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        window.alert('无法打开保存目录，请检查浏览器的文件访问权限。');
+        return;
+      }
+    }
     onAddSeason({
       episodes: seasonEpisodes,
       downloadType,
       concurrency,
       streamMode,
       maxRetries,
+      directoryHandle,
     });
     handleClose();
   };

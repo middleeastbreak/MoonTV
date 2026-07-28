@@ -16,14 +16,23 @@ export function supportsFileSystemAccess(): boolean {
   );
 }
 
+export function supportsDirectoryPicker(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'showDirectoryPicker' in window &&
+    typeof (window as any).showDirectoryPicker === 'function'
+  );
+}
+
 /**
  * 使用 File System Access API 创建写入流
  */
 export async function createFileSystemWriteStream(
   filename: string,
-  _fileSize?: number
+  _fileSize?: number,
+  directoryHandle?: FileSystemDirectoryHandle
 ): Promise<WritableStream<Uint8Array> | null> {
-  if (!supportsFileSystemAccess()) {
+  if (!directoryHandle && !supportsFileSystemAccess()) {
     return null;
   }
 
@@ -44,8 +53,10 @@ export async function createFileSystemWriteStream(
       ],
     };
 
-    // 请求用户选择保存位置
-    const fileHandle = await (window as any).showSaveFilePicker(options);
+    const safeFilename = filename.replace(/[\\/:*?"<>|]/g, '_');
+    const fileHandle = directoryHandle
+      ? await directoryHandle.getFileHandle(safeFilename, { create: true })
+      : await (window as any).showSaveFilePicker(options);
     const writable = await fileHandle.createWritable();
 
     return new WritableStream({

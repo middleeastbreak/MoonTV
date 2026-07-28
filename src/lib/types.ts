@@ -98,6 +98,7 @@ export interface SearchResult {
   desc?: string;
   type_name?: string;
   douban_id?: number;
+  direct_match?: boolean;
 }
 
 // 豆瓣数据结构

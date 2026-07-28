@@ -73,7 +73,10 @@ function characterOverlap(left: string[], right: string[]): number {
 }
 
 export function generateFuzzyQueries(query: string): string[] {
-  const normalized = normalizeFuzzyText(query);
+  const normalized = query
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[\s!-/:-@[-`{-~，。！？：；、“”‘’（）【】《》·—…￥]+/g, '');
   const characters = codepoints(normalized);
   const isChinese = characters.some((character) =>
     /[\u3400-\u9fff\uf900-\ufaff]/.test(character)
@@ -81,8 +84,22 @@ export function generateFuzzyQueries(query: string): string[] {
 
   if (isChinese) {
     if (characters.length < 3) return [];
+    const qualifier = normalized.match(
+      /(?:电影解说|電影解說|影视解说|影視解說|解说|解說)$/
+    )?.[0];
+    if (qualifier) {
+      const core = normalized.slice(0, -qualifier.length);
+      if (codepoints(core).length >= 2) {
+        return Array.from(new Set([core, qualifier])).slice(0, 2);
+      }
+    }
     if (characters.length === 3) {
-      return Array.from(new Set([characters[0], characters[2]]));
+      return Array.from(
+        new Set([
+          characters.slice(0, 2).join(''),
+          characters.slice(1).join(''),
+        ])
+      );
     }
     const size = Math.floor(characters.length / 2);
     return Array.from(

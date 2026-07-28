@@ -4,6 +4,10 @@ import { Download, List, Pause, Play, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
 
+import {
+  createSeasonDownloadQueue,
+  runSeasonDownloadQueue,
+} from '@/lib/download-batch';
 import { formatTime } from '@/lib/formatTime';
 import {
   downloadM3U8Video,
@@ -211,7 +215,8 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
       endSegment: number,
       streamMode: StreamSaverMode = 'disabled',
       maxRetries = 3,
-      completeStreamRef?: { current: (() => Promise<void>) | null }
+      completeStreamRef?: { current: (() => Promise<void>) | null },
+      fileSystemDirectory?: FileSystemDirectoryHandle
     ) => {
       try {
         // 不要创建新对象，直接使用传入的 parsedTask
@@ -283,7 +288,8 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
           concurrency,
           streamMode,
           maxRetries,
-          completeStreamRef
+          completeStreamRef,
+          fileSystemDirectory
         );
 
         // 下载函数执行完成后，检查是否有失败片段
@@ -512,12 +518,26 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
         concurrency: number;
         streamMode: StreamSaverMode;
         maxRetries: number;
+        directoryHandle?: FileSystemDirectoryHandle;
       };
 
-      for (let index = 0; index < config.episodes.length; index += 1) {
+      const queue = createSeasonDownloadQueue(config.episodes);
+      setTasks((previous) => [
+        ...previous,
+        ...queue.map((episode) => ({
+          id: episode.id,
+          url: episode.url,
+          title: episode.title,
+          status: 'waiting' as const,
+          progress: 0,
+          current: 0,
+          total: 0,
+        })),
+      ]);
+
+      await runSeasonDownloadQueue(queue, async (episode, index) => {
         if (cancelled) return;
-        const episode = config.episodes[index];
-        const taskId = `${Date.now()}-${index}`;
+        const taskId = episode.id;
         try {
           const parsedTask = await parseM3U8(episode.url);
           if (cancelled) return;
@@ -538,23 +558,22 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
             maxRetries: config.maxRetries ?? 3,
             parsedTask,
           };
-          setTasks((previous) => [
-            ...previous,
-            {
-              id: taskId,
-              url: episode.url,
-              title: episode.title,
-              status: 'downloading',
-              progress: 0,
-              current: 0,
-              total: parsedTask.tsUrlList.length,
-              config: taskConfig,
-              parsedTask,
-              abortController: controller,
-              pauseResumeController,
-              completeStreamRef,
-            },
-          ]);
+          setTasks((previous) =>
+            previous.map((task) =>
+              task.id === taskId
+                ? {
+                    ...task,
+                    status: 'downloading',
+                    total: parsedTask.tsUrlList.length,
+                    config: taskConfig,
+                    parsedTask,
+                    abortController: controller,
+                    pauseResumeController,
+                    completeStreamRef,
+                  }
+                : task
+            )
+          );
           await executeDownload(
             taskId,
             parsedTask,
@@ -567,25 +586,19 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
             parsedTask.tsUrlList.length,
             config.streamMode,
             config.maxRetries ?? 3,
-            completeStreamRef
+            completeStreamRef,
+            config.directoryHandle
           );
         } catch (error) {
           // eslint-disable-next-line no-console
           console.error(`第 ${index + 1} 集解析失败:`, error);
-          setTasks((previous) => [
-            ...previous,
-            {
-              id: taskId,
-              url: episode.url,
-              title: episode.title,
-              status: 'error',
-              progress: 0,
-              current: 0,
-              total: 0,
-            },
-          ]);
+          setTasks((previous) =>
+            previous.map((task) =>
+              task.id === taskId ? { ...task, status: 'error' } : task
+            )
+          );
         }
-      }
+      });
     };
 
     window.addEventListener('addDownloadBatch', handleAddBatchEvent);

@@ -341,11 +341,16 @@ export function triggerDownload(blob: Blob, filename: string, type: 'TS' | 'MP4'
   document.body.appendChild(a);
   a.click();
   
-  // 延迟清理，确保下载已开始
+  // iOS/iPadOS Safari 的保存面板会继续异步读取 Blob URL。过早撤销会导致
+  // “下载完成”后保存失败；桌面浏览器也保留一个较宽裕的交接时间。
+  const isAppleMobileWebKit = /iPad|iPhone|iPod|Macintosh.*Mobile/i.test(
+    navigator.userAgent
+  );
+  const cleanupDelay = isAppleMobileWebKit ? 60_000 : 1_000;
   setTimeout(() => {
-    document.body.removeChild(a);
+    if (a.parentNode) document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, 100);
+  }, cleanupDelay);
 }
 
 /**
@@ -370,7 +375,8 @@ export async function downloadM3U8Video(
   concurrency = 6, // 默认6个并发
   streamMode: StreamSaverMode = 'disabled', // 边下边存模式
   maxRetries = 3, // 最大重试次数
-  completeStreamRef?: { current: (() => Promise<void>) | null } // 完成流函数引用（用于边下边存模式立即保存）
+  completeStreamRef?: { current: (() => Promise<void>) | null }, // 完成流函数引用（用于边下边存模式立即保存）
+  fileSystemDirectory?: FileSystemDirectoryHandle
 ): Promise<void> {
   const { startSegment, endSegment } = task.rangeDownload;
   const totalSegments = endSegment - startSegment + 1;
@@ -414,7 +420,11 @@ export async function downloadM3U8Video(
       } else if (streamMode === 'file-system') {
         // 使用 File System Access API
         const { createFileSystemWriteStream } = await import('./stream-saver-fallback');
-        stream = await createFileSystemWriteStream(filename, estimatedSize);
+        stream = await createFileSystemWriteStream(
+          filename,
+          estimatedSize,
+          fileSystemDirectory
+        );
         if (stream) {
           // eslint-disable-next-line no-console
           console.log('✅ 使用文件系统直写');
@@ -436,6 +446,7 @@ export async function downloadM3U8Video(
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('创建流式写入器失败，降级为普通下载:', error);
+      if (fileSystemDirectory) throw error;
       writer = null;
     }
   }
@@ -826,8 +837,15 @@ export async function downloadM3U8Video(
   
   triggerDownload(blob, task.title, task.type);
 
+  // Blob 已经接管文件内容，及时释放任务中对全部分片的强引用。整季下载时
+  // 这能保证上一集不会继续占用内存，再开始下一集。
+  const savedSegmentCount = segments.length;
+  task.downloadedSegments.clear();
+  task.downloadedSegments = undefined;
+  segments.length = 0;
+
   onProgress?.({
-    current: segments.length,
+    current: savedSegmentCount,
     total: endSegment - startSegment + 1,
     percentage: 100,
     status: 'done',

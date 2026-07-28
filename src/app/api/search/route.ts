@@ -5,9 +5,17 @@ import { NextRequest } from 'next/server';
 import { getAuthInfoFromCookie } from '@/lib/auth';
 import { getAvailableApiSites, getCacheTime, getConfig } from '@/lib/config';
 import { searchFromApiStream } from '@/lib/downstream';
+import { isDirectTitleMatch } from '@/lib/search-title-match';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'edge';
+
+function markDirectMatches(results: any[], query: string) {
+  return results.map((result) => ({
+    ...result,
+    direct_match: isDirectTitleMatch(query, result.title || ''),
+  }));
+}
 
 export async function GET(request: NextRequest) {
   // 检查是否为本地存储模式
@@ -107,6 +115,7 @@ export async function GET(request: NextRequest) {
           if (hasResults && filteredResults.length === 0) {
             throw new Error('结果被过滤');
           }
+          filteredResults = markDirectMatches(filteredResults, query);
           siteResults.push(...filteredResults);
         }
         if (!hasResults) {
@@ -194,6 +203,8 @@ export async function GET(request: NextRequest) {
             await safeWrite({ failedSources });
             return;
           }
+
+          filteredResults = markDirectMatches(filteredResults, query);
 
           aggregatedResults.push(...filteredResults);
           if (

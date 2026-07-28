@@ -30,6 +30,13 @@ import {
   DANMAKU_VISIBLE_KEY,
   initializeMobileDanmakuPolicy,
 } from '@/lib/mobile-danmaku';
+import {
+  AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS,
+  getFailoverTimerAction,
+  getPlaybackRecoveryAction,
+  getSourceChangeRecoveryAction,
+  SOURCE_CHANGE_TIMEOUT_MS,
+} from '@/lib/playback-recovery';
 import { destroyPlayerMedia } from '@/lib/player-cleanup';
 import {
   formatPlaybackDiagnostics,
@@ -441,6 +448,9 @@ function PlayPageClient() {
   const danmakuControlsCleanupRef = useRef<(() => void) | null>(null);
   const lastDanmakuUrlRef = useRef<string>(''); // 上一次加载的弹幕 URL
   const failoverTimerRef = useRef<number | null>(null);
+  const playbackStallTimerRef = useRef<number | null>(null);
+  const sourceChangeTimerRef = useRef<number | null>(null);
+  const pendingFailoverAfterReconnectRef = useRef(false);
   const failoverAttemptedRef = useRef<Set<string>>(new Set());
   const failoverDisabledRef = useRef(false);
   const failoverCountRef = useRef(0);
@@ -773,8 +783,25 @@ function PlayPageClient() {
     setFailoverCountdown(null);
   };
 
+  const clearPlaybackStallTimer = () => {
+    if (playbackStallTimerRef.current !== null) {
+      window.clearTimeout(playbackStallTimerRef.current);
+      playbackStallTimerRef.current = null;
+    }
+  };
+
+  const clearSourceChangeTimer = () => {
+    if (sourceChangeTimerRef.current !== null) {
+      window.clearTimeout(sourceChangeTimerRef.current);
+      sourceChangeTimerRef.current = null;
+    }
+  };
+
   const resetAutomaticFailover = () => {
     clearFailoverCountdown();
+    clearPlaybackStallTimer();
+    clearSourceChangeTimer();
+    pendingFailoverAfterReconnectRef.current = false;
     failoverAttemptedRef.current.clear();
     failoverDisabledRef.current = false;
     failoverCountRef.current = 0;
@@ -1345,6 +1372,7 @@ function PlayPageClient() {
     try {
       if (!options.automatic) resetAutomaticFailover();
       // 显示换源加载状态
+      clearSourceChangeTimer();
       setVideoLoadingStage('sourceChanging');
       setIsVideoLoading(true);
 
@@ -1429,6 +1457,26 @@ function PlayPageClient() {
       setCurrentEpisodeIndex(targetIndex);
       sourceStartedAtRef.current = Date.now();
       diagnosticsRef.current.source = newSource;
+      const sourceChangeStartedAt = Date.now();
+      sourceChangeTimerRef.current = window.setTimeout(() => {
+        sourceChangeTimerRef.current = null;
+        const action = getSourceChangeRecoveryAction({
+          online: navigator.onLine,
+          elapsedMs: Date.now() - sourceChangeStartedAt,
+        });
+        if (action === 'wait-network') {
+          pendingFailoverAfterReconnectRef.current = true;
+          if (artPlayerRef.current) {
+            artPlayerRef.current.notice.show =
+              '网络已断开，恢复连接后将继续尝试播放';
+          }
+          return;
+        }
+        if (action === 'failover') {
+          setIsVideoLoading(false);
+          scheduleAutomaticFailover('新播放源长时间未能开始播放');
+        }
+      }, SOURCE_CHANGE_TIMEOUT_MS);
       // 加载蒙层由新播放器的 video:canplay 事件关闭，弱网时不会提前露出黑屏。
     } catch (err) {
       // 隐藏换源加载状态
@@ -1438,11 +1486,32 @@ function PlayPageClient() {
   };
 
   const scheduleAutomaticFailover = (lastError: string) => {
+    const recoveryAction = getPlaybackRecoveryAction({
+      online: navigator.onLine,
+      stalledForMs: 0,
+      fatalRecoveryExhausted: true,
+    });
+    if (recoveryAction === 'wait-network') {
+      pendingFailoverAfterReconnectRef.current = true;
+      diagnosticsRef.current.lastError = '网络连接已断开';
+      if (artPlayerRef.current) {
+        artPlayerRef.current.notice.show =
+          '网络已断开，恢复连接后将继续尝试播放';
+      }
+      return;
+    }
     if (
       failoverDisabledRef.current ||
       failoverTimerRef.current !== null ||
       failoverCountRef.current >= 2
     ) {
+      if (failoverCountRef.current >= 2) {
+        setIsVideoLoading(false);
+        if (artPlayerRef.current) {
+          artPlayerRef.current.notice.show =
+            '自动恢复未成功，请在下方手动选择播放源';
+        }
+      }
       return;
     }
 
@@ -1463,10 +1532,11 @@ function PlayPageClient() {
       if (artPlayerRef.current) {
         artPlayerRef.current.notice.show = '当前线路恢复失败，请手动换源';
       }
+      setIsVideoLoading(false);
       return;
     }
 
-    let remaining = 5;
+    let remaining = AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS;
     setFailoverCountdown(remaining);
     failoverTimerRef.current = window.setInterval(() => {
       remaining -= 1;
@@ -1474,6 +1544,14 @@ function PlayPageClient() {
       if (remaining > 0) return;
 
       clearFailoverCountdown();
+      if (getFailoverTimerAction(navigator.onLine) === 'wait-network') {
+        pendingFailoverAfterReconnectRef.current = true;
+        if (artPlayerRef.current) {
+          artPlayerRef.current.notice.show =
+            '网络仍未恢复，已暂停自动换源';
+        }
+        return;
+      }
       failoverAttemptedRef.current.add(`${nextSource.source}:${nextSource.id}`);
       failoverCountRef.current += 1;
       diagnosticsRef.current.failoverCount = failoverCountRef.current;
@@ -1485,6 +1563,65 @@ function PlayPageClient() {
       );
     }, 1000);
   };
+
+  const startPlaybackStallWatchdog = (lastError: string) => {
+    clearPlaybackStallTimer();
+    const watchedPlayer = artPlayerRef.current;
+    if (!watchedPlayer) return;
+    const startedAt = Date.now();
+    playbackStallTimerRef.current = window.setTimeout(() => {
+      playbackStallTimerRef.current = null;
+      if (artPlayerRef.current !== watchedPlayer) return;
+      const action = getPlaybackRecoveryAction({
+        online: navigator.onLine,
+        stalledForMs: Date.now() - startedAt,
+        fatalRecoveryExhausted: false,
+      });
+      if (action === 'wait-network') {
+        pendingFailoverAfterReconnectRef.current = true;
+        watchedPlayer.notice.show =
+          '网络已断开，恢复连接后将继续尝试播放';
+      } else if (action === 'failover') {
+        scheduleAutomaticFailover(lastError);
+      }
+    }, 12_000);
+  };
+
+  useEffect(() => {
+    const handleOffline = () => {
+      pendingFailoverAfterReconnectRef.current = true;
+      clearFailoverCountdown();
+      clearPlaybackStallTimer();
+      if (artPlayerRef.current) {
+        artPlayerRef.current.notice.show =
+          '网络已断开，恢复连接后将继续尝试播放';
+      }
+    };
+    const handleOnline = () => {
+      if (!pendingFailoverAfterReconnectRef.current) return;
+      pendingFailoverAfterReconnectRef.current = false;
+      const player = artPlayerRef.current;
+      if (!player) return;
+      player.notice.show = '网络已恢复，正在恢复当前播放源…';
+      try {
+        player.video?.hls?.startLoad();
+        const playPromise = player.video?.play?.();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          void playPromise.catch(() => undefined);
+        }
+      } catch (_) {
+        // 交给播放停滞监测处理。
+      }
+      startPlaybackStallWatchdog('网络恢复后当前播放源仍无响应');
+    };
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -1826,6 +1963,8 @@ function PlayPageClient() {
         window.clearInterval(failoverTimerRef.current);
         failoverTimerRef.current = null;
       }
+      clearPlaybackStallTimer();
+      clearSourceChangeTimer();
     };
   }, []);
 
@@ -2381,6 +2520,20 @@ function PlayPageClient() {
         requestWakeLock();
       });
 
+      artPlayerRef.current.on('video:playing', () => {
+        clearPlaybackStallTimer();
+        clearSourceChangeTimer();
+        pendingFailoverAfterReconnectRef.current = false;
+      });
+
+      artPlayerRef.current.on('video:waiting', () => {
+        startPlaybackStallWatchdog('视频持续缓冲，当前播放源无响应');
+      });
+
+      artPlayerRef.current.on('video:stalled', () => {
+        startPlaybackStallWatchdog('视频加载停滞，当前播放源无响应');
+      });
+
       artPlayerRef.current.on('pause', () => {
         releaseWakeLock();
         saveCurrentPlayProgress();
@@ -2408,6 +2561,7 @@ function PlayPageClient() {
       initializedPlayer.on('video:canplay', () => {
         // 旧播放器的延迟事件不能关闭新播放器的加载蒙层。
         if (artPlayerRef.current !== initializedPlayer) return;
+        clearSourceChangeTimer();
         if (!sourceHealthRecorded) {
           recordSourceSuccess(
             localStorage,
@@ -2509,9 +2663,7 @@ function PlayPageClient() {
 
       artPlayerRef.current.on('error', (err: any) => {
         console.error('播放器错误:', err);
-        if (artPlayerRef.current.currentTime > 0) {
-          return;
-        }
+        scheduleAutomaticFailover('播放器报告无法继续播放');
       });
 
       // 监听视频播放结束事件，自动播放下一集
