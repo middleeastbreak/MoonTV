@@ -1,6 +1,7 @@
 import { SearchResult } from './types';
 
 export const SOURCE_HEALTH_STORAGE_KEY = 'moontv_source_health_v1';
+export const AUTO_FAILOVER_STORAGE_KEY = 'enableAutomaticFailover';
 
 export interface SourceHealthRecord {
   successes: number;
@@ -16,6 +17,15 @@ type SourceHealthMap = Record<string, SourceHealthRecord>;
 interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+}
+
+/** Automatic failover is opt-in because episode naming differs across sources. */
+export function isAutomaticFailoverEnabled(storage: StorageLike): boolean {
+  try {
+    return storage.getItem(AUTO_FAILOVER_STORAGE_KEY) === 'true';
+  } catch (_) {
+    return false;
+  }
 }
 
 export function sourceHealthKey(source: Pick<SearchResult, 'source'>): string {
@@ -143,16 +153,21 @@ export function selectFailoverSource(
   episodeIndex: number,
   attemptedKeys: Set<string>,
   health: SourceHealthMap,
-  now = Date.now()
+  now = Date.now(),
+  resolveEpisodeIndex?: (source: SearchResult) => number | null
 ): SearchResult | null {
   const candidates = sources
     .map((source, index) => ({ source, index }))
     .filter(({ source }) => {
       const key = `${source.source}:${source.id}`;
+      const targetEpisodeIndex = resolveEpisodeIndex
+        ? resolveEpisodeIndex(source)
+        : episodeIndex;
       return (
         !(source.source === currentSource && source.id === currentId) &&
         !attemptedKeys.has(key) &&
-        Boolean(source.episodes?.[episodeIndex])
+        targetEpisodeIndex !== null &&
+        Boolean(source.episodes?.[targetEpisodeIndex])
       );
     });
 

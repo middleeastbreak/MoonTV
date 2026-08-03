@@ -1,6 +1,7 @@
 export type PlaybackRecoveryAction = 'none' | 'wait-network' | 'failover';
 
 export const AUTOMATIC_FAILOVER_COUNTDOWN_SECONDS = 12;
+export const MAX_AUTOMATIC_FAILOVER_ATTEMPTS = 2;
 export const SOURCE_STARTUP_TIMEOUT_MS = 25_000;
 const HAVE_CURRENT_DATA = 2;
 

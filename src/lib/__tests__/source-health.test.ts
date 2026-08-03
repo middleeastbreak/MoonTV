@@ -1,4 +1,6 @@
 import {
+  AUTO_FAILOVER_STORAGE_KEY,
+  isAutomaticFailoverEnabled,
   rankSourcesByPlaybackHealth,
   readSourceHealth,
   recordSourceFailure,
@@ -28,6 +30,15 @@ function memoryStorage() {
 }
 
 describe('playback source health', () => {
+  it('keeps automatic failover disabled until the user opts in', () => {
+    const storage = memoryStorage();
+    expect(isAutomaticFailoverEnabled(storage)).toBe(false);
+    storage.setItem(AUTO_FAILOVER_STORAGE_KEY, 'true');
+    expect(isAutomaticFailoverEnabled(storage)).toBe(true);
+    storage.setItem(AUTO_FAILOVER_STORAGE_KEY, 'false');
+    expect(isAutomaticFailoverEnabled(storage)).toBe(false);
+  });
+
   it('prefers a healthy untried source that contains the current episode', () => {
     const storage = memoryStorage();
     recordSourceFailure(storage, 'bad', 1000);
@@ -60,6 +71,20 @@ describe('playback source health', () => {
       2000
     );
     expect(selected?.source).toBe('second');
+  });
+
+  it('skips a source whose corresponding episode cannot be verified', () => {
+    const selected = selectFailoverSource(
+      [source('current'), source('wrong'), source('matched')],
+      'current',
+      'current',
+      2,
+      new Set(),
+      {},
+      2000,
+      (candidate) => (candidate.source === 'matched' ? 0 : null)
+    );
+    expect(selected?.source).toBe('matched');
   });
 
   it('uses real playback history before a one-shot probe score', () => {

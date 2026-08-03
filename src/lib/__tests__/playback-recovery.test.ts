@@ -4,9 +4,14 @@ import {
   getPlaybackRecoveryAction,
   getSourceChangeRecoveryAction,
   getSourceStartupRecoveryAction,
+  MAX_AUTOMATIC_FAILOVER_ATTEMPTS,
 } from '@/lib/playback-recovery';
 
 describe('playback recovery decisions', () => {
+  it('caps automatic failover instead of switching indefinitely', () => {
+    expect(MAX_AUTOMATIC_FAILOVER_ATTEMPTS).toBe(2);
+  });
+
   it('waits for the network instead of wasting fallback sources while offline', () => {
     expect(
       getPlaybackRecoveryAction({

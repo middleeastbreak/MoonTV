@@ -38,11 +38,14 @@ import {
   getPlaybackRecoveryAction,
   getSourceStartupRecoveryAction,
   isPlaybackAwaitingUserAction,
+  MAX_AUTOMATIC_FAILOVER_ATTEMPTS,
   SOURCE_STARTUP_TIMEOUT_MS,
 } from '@/lib/playback-recovery';
 import { destroyPlayerMedia } from '@/lib/player-cleanup';
+import { findMatchingEpisodeIndex } from '@/lib/source-episode-match';
 import {
   formatPlaybackDiagnostics,
+  isAutomaticFailoverEnabled,
   rankSourcesByPlaybackHealth,
   readSourceHealth,
   recordSourceFailure,
@@ -1468,16 +1471,35 @@ function PlayPageClient() {
         return;
       }
 
-      // 尝试跳转到当前正在播放的集数
-      let targetIndex = currentEpisodeIndex;
+      // 综艺分段和特别篇在不同源中的排列可能不同，不能直接复用数组下标。
+      const sourceDetail = detailRef.current;
+      const sourceIndex = currentEpisodeIndexRef.current;
+      const matchedIndex = sourceDetail
+        ? findMatchingEpisodeIndex({
+            currentIndex: sourceIndex,
+            currentTitles: sourceDetail.episodes_titles,
+            targetTitles: newDetail.episodes_titles,
+            currentEpisodeCount: sourceDetail.episodes?.length || 0,
+            targetEpisodeCount: newDetail.episodes?.length || 0,
+          })
+        : null;
 
-      // 如果当前集数超出新源的范围，则跳转到第一集
-      if (!newDetail.episodes || targetIndex >= newDetail.episodes.length) {
-        targetIndex = 0;
+      if (options.automatic && matchedIndex === null) {
+        setIsVideoLoading(false);
+        if (artPlayerRef.current) {
+          artPlayerRef.current.notice.show =
+            '备用源无法确认当前集数，已取消自动切换';
+        }
+        return;
       }
 
-      // 如果仍然是同一集数且播放进度有效，则在播放器就绪后恢复到原始进度
-      if (targetIndex !== currentEpisodeIndex) {
+      // 手动换源保留原有容错；自动换源只使用已唯一确认的集数。
+      const targetIndex =
+        matchedIndex ??
+        (sourceIndex < (newDetail.episodes?.length || 0) ? sourceIndex : 0);
+
+      // 匹配成功即为同一期/集；即使它在新源中的下标不同，也保留播放进度。
+      if (matchedIndex === null) {
         resumeTimeRef.current = 0;
       } else if (
         (!resumeTimeRef.current || resumeTimeRef.current === 0) &&
@@ -1527,12 +1549,21 @@ function PlayPageClient() {
       }
       return;
     }
+    if (!isAutomaticFailoverEnabled(localStorage)) {
+      diagnosticsRef.current.lastError = lastError;
+      setIsVideoLoading(false);
+      if (artPlayerRef.current) {
+        artPlayerRef.current.notice.show =
+          '当前线路恢复失败，请手动换源（自动换源未开启）';
+      }
+      return;
+    }
     if (
       failoverDisabledRef.current ||
       failoverTimerRef.current !== null ||
-      failoverCountRef.current >= 2
+      failoverCountRef.current >= MAX_AUTOMATIC_FAILOVER_ATTEMPTS
     ) {
-      if (failoverCountRef.current >= 2) {
+      if (failoverCountRef.current >= MAX_AUTOMATIC_FAILOVER_ATTEMPTS) {
         setIsVideoLoading(false);
         if (artPlayerRef.current) {
           artPlayerRef.current.notice.show =
@@ -1554,7 +1585,19 @@ function PlayPageClient() {
       currentIdRef.current,
       currentEpisodeIndexRef.current,
       failoverAttemptedRef.current,
-      readSourceHealth(localStorage)
+      readSourceHealth(localStorage),
+      Date.now(),
+      (candidate) => {
+        const sourceDetail = detailRef.current;
+        if (!sourceDetail) return null;
+        return findMatchingEpisodeIndex({
+          currentIndex: currentEpisodeIndexRef.current,
+          currentTitles: sourceDetail.episodes_titles,
+          targetTitles: candidate.episodes_titles,
+          currentEpisodeCount: sourceDetail.episodes?.length || 0,
+          targetEpisodeCount: candidate.episodes?.length || 0,
+        });
+      }
     );
     if (!nextSource) {
       if (sourceSearchInFlightRef.current) {
@@ -1584,6 +1627,13 @@ function PlayPageClient() {
         pendingFailoverAfterReconnectRef.current = true;
         if (artPlayerRef.current) {
           artPlayerRef.current.notice.show = '网络仍未恢复，已暂停自动换源';
+        }
+        return;
+      }
+      if (!isAutomaticFailoverEnabled(localStorage)) {
+        setIsVideoLoading(false);
+        if (artPlayerRef.current) {
+          artPlayerRef.current.notice.show = '已取消自动换源';
         }
         return;
       }

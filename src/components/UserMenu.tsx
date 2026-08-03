@@ -23,6 +23,7 @@ import {
   isMobileBatteryDevice,
   shouldShowDanmakuPowerWarning,
 } from '@/lib/mobile-danmaku';
+import { AUTO_FAILOVER_STORAGE_KEY } from '@/lib/source-health';
 import { checkForUpdates, CURRENT_VERSION, UpdateStatus } from '@/lib/version';
 
 import { useNavigationLoading } from './NavigationLoadingProvider';
@@ -73,6 +74,7 @@ export const UserMenu: React.FC = () => {
     return 3; // 默认重试3次
   });
   const [enablePreferBestSource, setEnablePreferBestSource] = useState(false);
+  const [enableAutomaticFailover, setEnableAutomaticFailover] = useState(false);
   const [preferredDanmakuPlatform, setPreferredDanmakuPlatform] =
     useState('bilibili1');
   const [isDanmakuPlatformDropdownOpen, setIsDanmakuPlatformDropdownOpen] =
@@ -255,6 +257,10 @@ export const UserMenu: React.FC = () => {
         setEnablePreferBestSource(JSON.parse(savedEnablePreferBestSource));
       }
 
+      setEnableAutomaticFailover(
+        localStorage.getItem(AUTO_FAILOVER_STORAGE_KEY) === 'true'
+      );
+
       const savedPreferredPlatform = localStorage.getItem(
         'preferredDanmakuPlatform'
       );
@@ -432,6 +438,11 @@ export const UserMenu: React.FC = () => {
     localStorage.setItem('enablePreferBestSource', JSON.stringify(value));
   };
 
+  const handleAutomaticFailoverToggle = (value: boolean) => {
+    setEnableAutomaticFailover(value);
+    localStorage.setItem(AUTO_FAILOVER_STORAGE_KEY, String(value));
+  };
+
   const handlePreferredPlatformChange = (value: string) => {
     setPreferredDanmakuPlatform(value);
     localStorage.setItem('preferredDanmakuPlatform', value);
@@ -540,6 +551,7 @@ export const UserMenu: React.FC = () => {
         ? true
         : !isMobileBatteryDevice(navigator);
     setEnablePreferBestSource(false);
+    setEnableAutomaticFailover(false);
     setAutoDanmakuEnabled(defaultAutoDanmaku);
     setPreferredDanmakuPlatform('bilibili1');
     setDanmakuRetryCount(3); // 新增：重置弹幕自动尝试次数为3
@@ -556,6 +568,7 @@ export const UserMenu: React.FC = () => {
       localStorage.setItem('doubanImageProxyUrl', defaultDoubanImageProxyUrl);
 
       localStorage.setItem('enablePreferBestSource', JSON.stringify(false));
+      localStorage.setItem(AUTO_FAILOVER_STORAGE_KEY, 'false');
       localStorage.setItem(
         'autoDanmakuEnabled',
         JSON.stringify(defaultAutoDanmaku)
@@ -1061,6 +1074,34 @@ export const UserMenu: React.FC = () => {
                 />
                 <div className='w-11 h-6 bg-gray-300 rounded-full peer-checked:bg-green-500 transition-colors dark:bg-gray-600'></div>
                 <div className='absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5'></div>
+              </div>
+            </label>
+          </div>
+
+          {/* 弱网自动换源 */}
+          <div className='flex items-start justify-between gap-4'>
+            <div className='min-w-0'>
+              <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                弱网络环境下自动切换播放源
+              </h4>
+              <p className='mt-1 text-xs leading-5 text-amber-600 dark:text-amber-400'>
+                默认关闭，每次播放最多尝试 2
+                个备用源。不同来源的分集命名可能不一致，仍可能匹配失败或识别有误，切换后请确认集数。
+              </p>
+            </div>
+            <label className='mt-0.5 flex flex-shrink-0 cursor-pointer items-center'>
+              <div className='relative'>
+                <input
+                  type='checkbox'
+                  className='peer sr-only'
+                  aria-label='弱网络环境下自动切换播放源'
+                  checked={enableAutomaticFailover}
+                  onChange={(e) =>
+                    handleAutomaticFailoverToggle(e.target.checked)
+                  }
+                />
+                <div className='h-6 w-11 rounded-full bg-gray-300 transition-colors peer-checked:bg-green-500 dark:bg-gray-600'></div>
+                <div className='absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform peer-checked:translate-x-5'></div>
               </div>
             </label>
           </div>
